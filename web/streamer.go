@@ -38,23 +38,32 @@ func (s *Streamer) Touch() {
 
 func (s *Streamer) Kick() {
 	s.mu.Lock()
-	s.lastTouch = time.Now()
 	if s.cancel != nil {
 		s.cancel()
 	}
 	s.mu.Unlock()
 }
 
-// Stop kills the pipeline and clears lastTouch so supervise will not
-// restart until the next heartbeat (/start) or a share-token HLS request.
-func (s *Streamer) Stop() {
-	s.mu.Lock()
-	s.lastTouch = time.Time{}
-	if s.cancel != nil {
-		log.Printf("streamer: viewer gone, stopping so the camera can sleep")
-		s.cancel()
+func alwaysOn() bool {
+	return strings.EqualFold(strings.TrimSpace(cfgCopy().StreamMode), "always")
+}
+
+func streamMode() string {
+	if alwaysOn() {
+		return "always"
 	}
-	s.mu.Unlock()
+	return "on_demand"
+}
+
+// wantedLocked reports whether the pipeline should run. Caller holds s.mu.
+func (s *Streamer) wantedLocked() bool {
+	if !s.configured() {
+		return false
+	}
+	if alwaysOn() {
+		return true
+	}
+	return !s.lastTouch.IsZero() && time.Since(s.lastTouch) < idleTimeout
 }
 
 func (s *Streamer) maybeStart() {
@@ -63,7 +72,7 @@ func (s *Streamer) maybeStart() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.running || s.starting || time.Since(s.lastTouch) >= idleTimeout {
+	if s.running || s.starting || !s.wantedLocked() {
 		return
 	}
 	s.starting = true
@@ -105,7 +114,7 @@ func (s *Streamer) supervise() {
 	for range ticker.C {
 		s.maybeStart()
 		s.mu.Lock()
-		desired := s.configured() && time.Since(s.lastTouch) < idleTimeout
+		desired := s.wantedLocked()
 		switch {
 		case !desired && (s.running || s.starting) && s.cancel != nil:
 			log.Printf("streamer: idle %s, stopping so the camera can sleep", idleTimeout)

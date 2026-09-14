@@ -19,7 +19,7 @@ type statPoint struct {
 	Online  bool  `json:"on"`
 }
 
-const statusPollEvery = 15 * time.Minute
+const defaultBatteryPollMin = 15
 
 var (
 	statsMu        sync.Mutex
@@ -28,6 +28,19 @@ var (
 	statusPollAt   time.Time
 	statusPollBusy bool
 )
+
+func batteryPollMin() int {
+	switch m := cfgCopy().BatteryPollMin; m {
+	case 5, 15, 30, 60:
+		return m
+	default:
+		return defaultBatteryPollMin
+	}
+}
+
+func batteryPollEvery() time.Duration {
+	return time.Duration(batteryPollMin()) * time.Minute
+}
 
 func statsPath() string { return filepath.Join(*workDir, "stats.json") }
 
@@ -67,18 +80,12 @@ func statsClear() {
 	statsMu.Unlock()
 }
 
-func statsCount() int {
-	statsMu.Lock()
-	defer statsMu.Unlock()
-	return len(stats)
-}
-
 func pollDeviceStatus() {
 	if !streamer.configured() {
 		return
 	}
 	statusPollMu.Lock()
-	if statusPollBusy || (!statusPollAt.IsZero() && time.Since(statusPollAt) < statusPollEvery) {
+	if statusPollBusy || (!statusPollAt.IsZero() && time.Since(statusPollAt) < batteryPollEvery()) {
 		statusPollMu.Unlock()
 		return
 	}
@@ -90,7 +97,7 @@ func pollDeviceStatus() {
 	if err != nil {
 		log.Printf("stats: poll failed: %v", err)
 		statusPollMu.Lock()
-		statusPollAt = time.Now().Add(-statusPollEvery + 3*time.Minute)
+		statusPollAt = time.Now().Add(-batteryPollEvery() + 3*time.Minute)
 		statusPollBusy = false
 		statusPollMu.Unlock()
 		return
@@ -111,7 +118,7 @@ func pollDeviceStatus() {
 func statsCollector() {
 	for {
 		pollDeviceStatus()
-		time.Sleep(statusPollEvery)
+		time.Sleep(30 * time.Second)
 	}
 }
 
@@ -136,9 +143,52 @@ func handleStatsAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(out)
 }
 
+func batteryPollSeg(lang string, current int) string {
+	esc := template.HTMLEscapeString
+	item := func(m int, key string) string {
+		on := m == current
+		cls, dis := "", ""
+		if on {
+			cls = ` class="on"`
+			dis = " disabled"
+		}
+		return `<form method="post" action="#battery-poll"><input type="hidden" name="form" value="poll"><input type="hidden" name="min" value="` + strconv.Itoa(m) + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
+	}
+	return `<div class="seg">` +
+		item(5, "stats.poll5") +
+		item(15, "stats.poll15") +
+		item(30, "stats.poll30") +
+		item(60, "stats.poll60") +
+		`</div>`
+}
+
+func saveBatteryPoll(r *http.Request, lang string) string {
+	esc := template.HTMLEscapeString
+	if r.FormValue("form") != "poll" {
+		return ""
+	}
+	n, err := strconv.Atoi(r.FormValue("min"))
+	if err != nil || (n != 5 && n != 15 && n != 30 && n != 60) {
+		return `<p class="err">` + esc(T(lang, "error")) + `</p>`
+	}
+	if err := updateCfg(func(c *Config) error {
+		c.BatteryPollMin = n
+		return nil
+	}); err != nil {
+		return `<p class="err">` + esc(err.Error()) + `</p>`
+	}
+	log.Printf("stats: battery poll every %d min", n)
+	return `<p class="ok">` + esc(T(lang, "stats.pollSaved")) + `</p>`
+}
+
 func handleStats(w http.ResponseWriter, r *http.Request) {
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
+	msg := ""
+	if r.Method == http.MethodPost {
+		msg = saveBatteryPoll(r, lang)
+	}
+	pollMin := batteryPollMin()
 	jsT, _ := json.Marshal(map[string]string{
 		"points":  T(lang, "stats.points"),
 		"empty":   T(lang, "stats.empty"),
@@ -147,10 +197,10 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"offline": T(lang, "live.offline"),
 	})
 	render(w, r, T(lang, "stats.title"), tabs(r, "stats")+`
-<div class="row" style="margin-bottom:10px">
-  <button class="rbtn on" data-r="day">`+esc(T(lang, "stats.day"))+`</button>
-  <button class="rbtn" data-r="week">`+esc(T(lang, "stats.week"))+`</button>
-  <button class="rbtn" data-r="month">`+esc(T(lang, "stats.month"))+`</button>
+<div class="seg" id="rangeSeg" style="margin-bottom:10px">
+  <button type="button" class="on" data-r="day">`+esc(T(lang, "stats.day"))+`</button>
+  <button type="button" data-r="week">`+esc(T(lang, "stats.week"))+`</button>
+  <button type="button" data-r="month">`+esc(T(lang, "stats.month"))+`</button>
 </div>
 <div id="chartwrap" style="position:relative">
   <canvas id="chart" style="width:100%;height:240px;cursor:crosshair;display:block"></canvas>
@@ -163,9 +213,15 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
   #ctip b { color:#34d399; font-size:16px; }
 </style>
 <p class="muted" id="meta"></p>
+<div class="anchor" id="battery-poll">
+<p class="muted" style="margin-top:18px">`+esc(T(lang, "stats.poll"))+`</p>
+`+batteryPollSeg(lang, pollMin)+msg+`
+<form method="post" action="`+*basePath+`/maint?what=stats#battery-poll"><button class="btn gray">`+esc(T(lang, "maint.clearStats"))+`</button></form>
+</div>
 <script>
 const base = "`+*basePath+`";
 const loc = "`+localeFor(lang)+`";
+const pollMin = "`+strconv.Itoa(pollMin)+`";
 const t = `+string(jsT)+`;
 const c = document.getElementById("chart");
 const wrap = document.getElementById("chartwrap");
@@ -174,11 +230,11 @@ const meta = document.getElementById("meta");
 let range = "day";
 let pts = [];
 let hoverIdx = null;
-document.querySelectorAll(".rbtn").forEach(b => b.onclick = () => {
+document.querySelectorAll("#rangeSeg button").forEach(b => b.onclick = () => {
   range = b.dataset.r;
   hoverIdx = null;
   tip.style.display = "none";
-  document.querySelectorAll(".rbtn").forEach(x => x.classList.toggle("on", x === b));
+  document.querySelectorAll("#rangeSeg button").forEach(x => x.classList.toggle("on", x === b));
   load();
 });
 async function load() {
@@ -188,8 +244,8 @@ async function load() {
     tip.style.display = "none";
     draw();
     meta.textContent = pts.length
-      ? t.points.replace("%s", String(pts.length))
-      : t.empty;
+      ? t.points.replace("%s", String(pts.length)).replace("%s", pollMin)
+      : t.empty.replace("%s", pollMin);
   } catch(e) { meta.textContent = t.fail; }
 }
 function geom() {

@@ -96,7 +96,7 @@ func devStatusLoad() {
 
 func maybeRefreshDevStatus() {
 	statusPollMu.Lock()
-	due := !statusPollBusy && (statusPollAt.IsZero() || time.Since(statusPollAt) >= statusPollEvery)
+	due := !statusPollBusy && (statusPollAt.IsZero() || time.Since(statusPollAt) >= batteryPollEvery())
 	statusPollMu.Unlock()
 	if due {
 		go pollDeviceStatus()

@@ -24,18 +24,60 @@ func TestWaitBothFromScratch(t *testing.T) {
 	waitBoth(done, 0)
 }
 
-func TestStopClearsViewer(t *testing.T) {
+func TestWantedAlwaysOn(t *testing.T) {
+	orig := cfg
+	t.Cleanup(func() {
+		cfgMu.Lock()
+		cfg = orig
+		cfgMu.Unlock()
+	})
+	cfgMu.Lock()
+	cfg.Email, cfg.Password, cfg.Serial = "a", "b", "c"
+	cfg.StreamMode = "always"
+	cfgMu.Unlock()
 	s := NewStreamer()
-	s.Touch()
-	if s.lastTouch.IsZero() {
-		t.Fatal("Touch should set lastTouch")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.wantedLocked() {
+		t.Fatal("always-on should be wanted without lastTouch")
 	}
-	s.Stop()
+	cfgMu.Lock()
+	cfg.StreamMode = "on_demand"
+	cfgMu.Unlock()
+	if s.wantedLocked() {
+		t.Fatal("on-demand without lastTouch should not be wanted")
+	}
+	s.lastTouch = time.Now()
+	if !s.wantedLocked() {
+		t.Fatal("on-demand with fresh lastTouch should be wanted")
+	}
+}
+
+func TestOnDemandExpiresAfterIdle(t *testing.T) {
+	orig := cfg
+	t.Cleanup(func() {
+		cfgMu.Lock()
+		cfg = orig
+		cfgMu.Unlock()
+	})
+	cfgMu.Lock()
+	cfg.Email, cfg.Password, cfg.Serial = "a", "b", "c"
+	cfg.StreamMode = "on_demand"
+	cfgMu.Unlock()
+	s := NewStreamer()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastTouch = time.Now().Add(-idleTimeout - time.Second)
+	if s.wantedLocked() {
+		t.Fatal("on-demand should not be wanted after idle timeout")
+	}
+}
+
+func TestKickDoesNotCountAsViewer(t *testing.T) {
+	s := NewStreamer()
+	s.Kick()
 	if !s.lastTouch.IsZero() {
-		t.Fatal("Stop should forget the viewer so idle restart cannot happen")
-	}
-	if s.cancel != nil {
-		t.Fatal("Stop should not leave a live cancel when nothing was running")
+		t.Fatal("Kick should not create a viewer")
 	}
 }
 

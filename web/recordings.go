@@ -142,7 +142,6 @@ func handleRecordings(w http.ResponseWriter, r *http.Request) {
 	}
 	render(w, r, T(lang, "rec.title"), tabs(r, "rec")+
 		`<p class="muted">`+fmt.Sprintf(T(lang, "rec.total"), fmt.Sprintf("%.1f", float64(total)/1048576))+`</p>`+
-		`<p class="muted">`+html.EscapeString(T(lang, "rec.clearHint"))+`</p>`+
 		`<form method="post" action="`+*basePath+`/maint?what=recordings" onsubmit="return confirm('`+template.JSEscapeString(T(lang, "rec.confirm"))+`')"><button class="btn gray">`+html.EscapeString(T(lang, "rec.clearAll"))+`</button></form>`+
 		`<table style="width:100%;font-size:14px;border-spacing:0 8px">`+rows.String()+`</table>`)
 }

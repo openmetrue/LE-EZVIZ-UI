@@ -10,14 +10,16 @@ import (
 )
 
 type Config struct {
-	PasswordHash  string `json:"password_hash"`  // bcrypt of the site password; empty = first run
-	SessionSecret string `json:"session_secret"` // hex, HMAC key for session cookies
-	DeviceToken   string `json:"device_token"`   // token for machine / share URLs
-	Email         string `json:"email"`
-	Password      string `json:"password"`
-	Serial        string `json:"serial"`
-	Region        string `json:"region"`
-	LogLevel      string `json:"log_level"` // debug|info; empty means info
+	PasswordHash   string `json:"password_hash"`  // bcrypt of the site password; empty = first run
+	SessionSecret  string `json:"session_secret"` // hex, HMAC key for session cookies
+	DeviceToken    string `json:"device_token"`   // token for machine / share URLs
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	Serial         string `json:"serial"`
+	Region         string `json:"region"`
+	LogLevel       string `json:"log_level"`        // debug|info; empty means info
+	StreamMode     string `json:"stream_mode"`      // on_demand (default) | always
+	BatteryPollMin int    `json:"battery_poll_min"` // 5, 15 (default), 30, 60
 }
 
 var (

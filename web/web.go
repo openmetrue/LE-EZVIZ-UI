@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,6 +43,13 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
   .player video { z-index:1; background:transparent; }
   code { background:#0c0f14; padding:2px 6px; border-radius:6px; font-size:12px; word-break:break-all; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .seg { display:flex; width:100%; max-width:100%; padding:3px; gap:2px; background:#12161c; border:1px solid #2a3038; border-radius:10px; box-sizing:border-box; }
+  .seg form, .seg > button { margin:0; flex:1 1 0; min-width:0; }
+  .seg button { margin:0; width:100%; border:0; border-radius:8px; background:transparent; color:#9aa4b2; font:inherit; font-size:clamp(12px, 3.4vw, 14px); font-weight:500; padding:8px 6px; cursor:pointer; white-space:normal; line-height:1.25; text-align:center; overflow-wrap:break-word; }
+  .seg button.on { background:#3b82f6; color:#fff; }
+  .seg button.on:disabled { opacity:1; cursor:default; }
+  .seg + p { margin-top: 10px; }
+  .anchor { scroll-margin-top: 8px; }
   #bat:not(:empty) { margin-right: 8px; }
   pre.log { background:#0c0f14; border:1px solid #2a3038; border-radius:8px; padding:12px; font-size:11px; line-height:1.45; overflow:auto; max-height:70vh; white-space:pre-wrap; word-break:break-all; margin:12px 0 0; }
 </style></head><body><div class="card">{{.Body}}</div></body></html>`))
@@ -167,11 +175,13 @@ func handleLogout(w http.ResponseWriter, r *http.Request) {
 func handleSetup(w http.ResponseWriter, r *http.Request) {
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
-	msg := ""
+	ezvizMsg, streamMsg, pwMsg := "", "", ""
 	if r.Method == http.MethodPost {
 		switch r.FormValue("form") {
 		case "sitepw":
-			msg = changeSitePassword(r, lang)
+			pwMsg = changeSitePassword(r, lang)
+		case "stream":
+			streamMsg = changeStreamMode(r, lang)
 		default:
 			err := updateCfg(func(c *Config) error {
 				c.Email = strings.TrimSpace(r.FormValue("email"))
@@ -184,15 +194,15 @@ func handleSetup(w http.ResponseWriter, r *http.Request) {
 				return nil
 			})
 			if err != nil {
-				msg = `<p class="err">` + esc(err.Error()) + `</p>`
+				ezvizMsg = `<p class="err">` + esc(err.Error()) + `</p>`
 			} else {
 				streamer.Kick()
-				msg = `<p class="ok">` + esc(T(lang, "setup.saved")) + `</p>`
+				ezvizMsg = `<p class="ok">` + esc(T(lang, "setup.saved")) + `</p>`
 			}
 		}
 	}
 	c := cfgCopy()
-	render(w, r, T(lang, "setup.title"), tabs(r, "setup")+langBar(r)+msg+`
+	render(w, r, T(lang, "setup.title"), tabs(r, "setup")+langBar(r)+`
 <form method="post">
 <input type="hidden" name="form" value="ezviz">
 <label>`+esc(T(lang, "setup.email"))+`</label><input name="email" type="email" value="`+esc(c.Email)+`" required>
@@ -200,17 +210,21 @@ func handleSetup(w http.ResponseWriter, r *http.Request) {
 <label>`+esc(T(lang, "setup.serial"))+`</label><input name="serial" value="`+esc(c.Serial)+`" required>
 <label>`+esc(T(lang, "setup.region"))+`</label><select name="region">`+regionOptions(c.Region)+`</select>
 <button>`+esc(T(lang, "setup.save"))+`</button>
-</form>
+</form>`+ezvizMsg+`
+<div class="anchor" id="stream-mode">
+<h1 style="margin-top:26px">`+esc(T(lang, "setup.stream"))+`</h1>
+`+streamModeSeg(lang, c.StreamMode)+streamMsg+`
+<p class="muted">`+esc(T(lang, "setup.streamHint"))+`</p>
+</div>
 <h1 style="margin-top:26px">`+esc(T(lang, "setup.sitepw"))+`</h1>
-<p class="muted">`+esc(T(lang, "setup.sitepwHint"))+`</p>
 <form method="post">
 <input type="hidden" name="form" value="sitepw">
 <label>`+esc(T(lang, "setup.current"))+`</label><input name="current" type="password" required>
 <label>`+esc(T(lang, "setup.new"))+`</label><input name="new" type="password" minlength="8" required>
 <label>`+esc(T(lang, "setup.repeat"))+`</label><input name="repeat" type="password" minlength="8" required>
 <button>`+esc(T(lang, "setup.change"))+`</button>
-</form>
-<p class="muted" style="margin-top:18px">`+esc(T(lang, "setup.token"))+`<br><code>`+esc(c.DeviceToken)+`</code></p>`+maintSection(lang))
+</form>`+pwMsg+`
+<p class="muted" style="margin-top:18px">`+esc(T(lang, "setup.token"))+`<br><code>`+esc(c.DeviceToken)+`</code></p>`)
 }
 
 func changeSitePassword(r *http.Request, lang string) string {
@@ -238,6 +252,52 @@ func changeSitePassword(r *http.Request, lang string) string {
 	return `<p class="ok">` + esc(T(lang, "setup.pwOk")) + `</p>`
 }
 
+func streamModeSeg(lang, current string) string {
+	if current != "always" {
+		current = "on_demand"
+	}
+	return `<div class="seg">` + streamModeSegItem(lang, "on_demand", current) + streamModeSegItem(lang, "always", current) + `</div>`
+}
+
+func streamModeSegItem(lang, mode, current string) string {
+	on := mode == current
+	cls, dis := "", ""
+	if on {
+		cls = ` class="on"`
+		dis = " disabled"
+	}
+	key := "setup.streamOnDemand"
+	if mode == "always" {
+		key = "setup.streamAlways"
+	}
+	esc := template.HTMLEscapeString
+	return `<form method="post" action="#stream-mode"><input type="hidden" name="form" value="stream"><input type="hidden" name="mode" value="` + mode + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
+}
+
+func changeStreamMode(r *http.Request, lang string) string {
+	esc := template.HTMLEscapeString
+	mode := r.FormValue("mode")
+	if mode != "always" && mode != "on_demand" {
+		return `<p class="err">` + esc(T(lang, "error")) + `</p>`
+	}
+	prev := streamMode()
+	if err := updateCfg(func(c *Config) error {
+		c.StreamMode = mode
+		return nil
+	}); err != nil {
+		return `<p class="err">` + esc(err.Error()) + `</p>`
+	}
+	if mode == "always" {
+		log.Printf("streamer: always-on, keeping the camera awake")
+		streamer.maybeStart()
+		return `<p class="ok">` + esc(T(lang, "setup.streamSavedAlways")) + `</p>`
+	}
+	if prev != "on_demand" {
+		log.Printf("streamer: on-demand")
+	}
+	return `<p class="ok">` + esc(T(lang, "setup.streamSavedOnDemand")) + `</p>`
+}
+
 func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
@@ -258,6 +318,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 		"offline":       T(lang, "live.offline"),
 		"upgrade":       T(lang, "live.upgrade"),
 		"waking":        T(lang, "live.waking"),
+		"alwaysOn":      T(lang, "live.alwaysOn"),
 	})
 	render(w, r, T(lang, "live.title"), tabs(r, "live")+`
 <div class="player">
@@ -265,6 +326,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
   <video id="v" controls autoplay muted playsinline poster="`+*basePath+`/preview.jpg"></video>
 </div>
 <p class="muted"><span id="bat"></span><span id="st"></span></p>
+<p class="muted" id="mode"></p>
 <div class="row">
   <button id="save" type="button">`+esc(T(lang, "live.save"))+`</button>
   <button id="share" type="button" class="btn gray" style="margin-top:16px">`+esc(T(lang, "live.share"))+`</button>
@@ -281,8 +343,9 @@ prev.onerror = () => { prev.style.display = "none"; };
 prev.onload = () => { prev.style.display = "block"; };
 const st = document.getElementById("st");
 const bat = document.getElementById("bat");
+const modeEl = document.getElementById("mode");
 let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, readyHits = 0, goneHits = 0;
-let viewing = false, pollTimer = 0;
+let pollTimer = 0;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -332,36 +395,22 @@ setInterval(() => {
   lastT = v.currentTime;
 }, 4000);
 
-function pingStop() {
-  const url = base + "/stop";
-  try {
-    if (navigator.sendBeacon && navigator.sendBeacon(url)) return;
-  } catch (e) {}
-  fetch(url, {method: "POST", keepalive: true, credentials: "same-origin"}).catch(()=>{});
-}
+function tabActive() { return document.visibilityState === "visible"; }
 
-function sleepStream() {
-  if (!viewing) return;
-  viewing = false;
-  if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
-  detach();
-  pingStop();
-}
-
-function wakeStream() {
-  if (viewing) return;
-  viewing = true;
-  poll();
+function schedulePoll(ms) {
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, ms);
 }
 
 async function poll() {
-  if (!viewing) return;
+  pollTimer = 0;
+  if (!tabActive()) return;
   try {
     const r = await fetch(base + "/start", {method: "POST"});
-    if (!viewing) return;
-    if (!r.ok) { st.textContent = t.relogin; pollTimer = setTimeout(poll, 4000); return; }
+    if (!tabActive()) return;
+    if (!r.ok) { st.textContent = t.relogin; schedulePoll(4000); return; }
     const s = await (await fetch(base + "/api/status")).json();
-    if (!viewing) return;
+    if (!tabActive()) return;
     if (s.device && s.device.battery) {
       const d = s.device;
       let line = t.battery + ": " + d.battery + "%";
@@ -370,6 +419,7 @@ async function poll() {
       if (d.upgrade_available === 1) line += " · " + t.upgrade;
       bat.textContent = line;
     }
+    if (modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
     if (s.restarts && s.restarts !== seenRestarts) {
       if (seenRestarts) detach();
       seenRestarts = s.restarts;
@@ -378,22 +428,24 @@ async function poll() {
     if (ready) { readyHits++; goneHits = 0; } else { readyHits = 0; goneHits++; }
     const dead = !s.running && !s.starting;
     if (attached && dead && goneHits >= 2) detach();
-    if (ready && !attached && readyHits >= 2) attach();
+    if (ready && !attached && readyHits >= 1) attach();
     if (!s.configured) st.textContent = t.notConfigured;
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
     else if (!hasPlayed && (s.starting || s.running) && !attached) st.textContent = t.waking;
     else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
-    pollTimer = setTimeout(poll, (ready && attached) ? 2000 : 1000);
-  } catch(e) { if (viewing) pollTimer = setTimeout(poll, 3000); }
+    schedulePoll((ready && attached) ? 2000 : 1000);
+  } catch(e) { if (tabActive()) schedulePoll(3000); }
 }
-if (document.visibilityState !== "hidden") wakeStream();
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") sleepStream();
-  else wakeStream();
-});
-window.addEventListener("pagehide", sleepStream);
-window.addEventListener("pageshow", wakeStream);
+function onTab() {
+  if (tabActive()) poll();
+  else {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
+    detach();
+  }
+}
+document.addEventListener("visibilitychange", onTab);
+window.addEventListener("pageshow", onTab);
 
 document.getElementById("save").onclick = async () => {
   st.textContent = t.saving;
@@ -424,11 +476,6 @@ document.getElementById("share").onclick = async () => {
 
 func handleStart(w http.ResponseWriter, r *http.Request) {
 	streamer.Touch()
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleStop(w http.ResponseWriter, r *http.Request) {
-	streamer.Stop()
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -519,13 +566,14 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	ds, dsAt := devStatusGet()
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
-		"running":    running,
-		"starting":   starting,
-		"manifest":   running && hlsPlayable(),
-		"last_error": lastError,
-		"restarts":   restarts,
-		"configured": streamer.configured(),
-		"device":     ds,
+		"running":     running,
+		"starting":    starting,
+		"manifest":    running && hlsPlayable(),
+		"last_error":  lastError,
+		"restarts":    restarts,
+		"configured":  streamer.configured(),
+		"stream_mode": streamMode(),
+		"device":      ds,
 	}
 	if !startedAt.IsZero() {
 		resp["started_at"] = startedAt

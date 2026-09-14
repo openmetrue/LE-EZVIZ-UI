@@ -41,7 +41,7 @@ func handleMaint(w http.ResponseWriter, r *http.Request) {
 	case "stats":
 		statsClear()
 		log.Printf("maint: battery history reset")
-		http.Redirect(w, r, *basePath+"/stats", http.StatusSeeOther)
+		http.Redirect(w, r, *basePath+"/stats#battery-poll", http.StatusSeeOther)
 		return
 	case "recordings":
 		deleteAllRecordings()
@@ -91,31 +91,6 @@ func trimLog(path string, max int64) {
 	}
 }
 
-func maintStats() (logsMB float64, statCount int) {
-	var total int64
-	for _, f := range logFiles() {
-		if f.Path == "" {
-			continue
-		}
-		if st, err := os.Stat(f.Path); err == nil {
-			total += st.Size()
-		}
-	}
-	return float64(total) / 1048576, statsCount()
-}
-
-func maintSection(lang string) string {
-	esc := html.EscapeString
-	logsMB, statCount := maintStats()
-	return `
-<h1 style="margin-top:26px">` + esc(T(lang, "maint.title")) + `</h1>
-<p class="muted">` + esc(fmt.Sprintf(T(lang, "maint.summary"), logsMB, fmt.Sprint(statCount))) + `<a href="` + *basePath + `/logs">` + esc(T(lang, "maint.read")) + `</a></p>
-<p class="muted">` + esc(T(lang, "maint.statsHint")) + `</p>
-<div class="row">
-<form method="post" action="` + *basePath + `/maint?what=stats"><button class="btn gray" style="margin-top:0">` + esc(T(lang, "maint.clearStats")) + `</button></form>
-</div>`
-}
-
 func handleLogs(w http.ResponseWriter, r *http.Request) {
 	lang := langOf(r)
 	cur := r.URL.Query().Get("f")
@@ -148,7 +123,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 				return nil
 			})
 			streamer.Kick()
-			loc += "&saved=1"
+			loc += "&saved=1#log-level"
 		case "clear":
 			clearLogFiles()
 		}
@@ -188,11 +163,13 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	lvl := bridgeLogLevel()
 	esc := html.EscapeString
 	levelBtn := func(id, key string) string {
-		cls := "btn gray rbtn"
-		if lvl == id {
-			cls += " on"
+		on := lvl == id
+		cls, dis := "", ""
+		if on {
+			cls = ` class="on"`
+			dis = " disabled"
 		}
-		return `<form method="post" style="margin:0"><input type="hidden" name="action" value="level"><input type="hidden" name="level" value="` + id + `"><input type="hidden" name="f" value="` + esc(cur) + `"><button class="` + cls + `" style="margin-top:0">` + esc(T(lang, key)) + `</button></form>`
+		return `<form method="post"><input type="hidden" name="action" value="level"><input type="hidden" name="level" value="` + id + `"><input type="hidden" name="f" value="` + esc(cur) + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
 	}
 	msg := ""
 	if r.URL.Query().Get("saved") == "1" {
@@ -200,13 +177,15 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	render(w, r, T(lang, "logs.title"), tabs(r, "logs")+
 		`<div class="row" style="margin-bottom:8px">`+nav+`</div>`+
+		`<div class="anchor" id="log-level">`+
 		`<p class="muted">`+esc(T(lang, "logs.level"))+`</p>`+
-		`<div class="row" style="margin-bottom:8px">`+levelBtn("info", "logs.levelInfo")+levelBtn("debug", "logs.levelDebug")+`</div>`+
-		`<p class="muted">`+esc(T(lang, "logs.levelHint"))+`</p>`+msg+
+		`<div class="seg">`+levelBtn("info", "logs.levelInfo")+levelBtn("debug", "logs.levelDebug")+`</div>`+
+		msg+
+		`<p class="muted">`+esc(T(lang, "logs.levelHint"))+`</p>`+
+		`</div>`+
 		`<div class="row" style="margin:12px 0">
 <form method="post" onsubmit="return confirm('`+template.JSEscapeString(T(lang, "logs.clearConfirm"))+`')"><input type="hidden" name="action" value="clear"><input type="hidden" name="f" value="`+esc(cur)+`"><button class="btn gray" style="margin-top:0">`+esc(T(lang, "logs.clear"))+`</button></form>
 </div>`+
-		`<p class="muted">`+esc(T(lang, "logs.clearHint"))+`</p>`+
 		`<p class="muted">`+html.EscapeString(meta)+dl+` · `+html.EscapeString(T(lang, "logs.limit"))+`</p>`+
 		`<pre class="log">`+html.EscapeString(string(body))+`</pre>`)
 }
