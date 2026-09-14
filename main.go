@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -8,6 +9,10 @@ import (
 	client "le-ezviz-vs/client"
 	logging "le-ezviz-vs/logging"
 	"os"
+	"os/signal"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -23,6 +28,7 @@ var out = flag.String("out", "stream", "Where to write the raw stream: file path
 var statusOnly = flag.Bool("statusOnly", false, "Print device status as JSON to stdout and exit (no stream, camera stays asleep)")
 var maxStreamTime = flag.Int("maxStreamTime", 0, "If >0, proactively reconnect the VTDU stream every N seconds (keeps battery cameras awake past their KeepAlive limit)")
 var statusRaw = flag.Bool("statusRaw", false, "Print raw STATUS,WIFI pagelist JSON to stdout and exit (debug)")
+var idleWait = flag.Bool("idleWait", false, "Stay logged in; wait for a newline on stdin before each stream, SIGUSR1 ends the current stream")
 var preserveSession = flag.Bool("preserveSession", false, "Preserve session token") //TBD
 var stdout = flag.Bool("stdout", true, "Print log to the terminal")
 var logFile = flag.Bool("logFile", true, "Print log to lez.log")
@@ -44,7 +50,7 @@ func main() {
 	if *password == "" {
 		panic("password empty")
 	}
-	if *out == "-" || *statusOnly || *statusRaw {
+	if *out == "-" || *statusOnly || *statusRaw || *idleWait {
 		*stdout = false
 		*logFile = true
 	}
@@ -92,8 +98,7 @@ func main() {
 		json.NewEncoder(os.Stdout).Encode(ds)
 		return
 	}
-	_, err = LEZ.GetServerInfo()
-	if err != nil {
+	if _, err = LEZ.GetServerInfo(); err != nil {
 		panic(err)
 	}
 
@@ -101,9 +106,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	_, err = LEZ.GetVTDUv2Token()
-	if err != nil {
-		panic(err)
+	if *deviceSerial == "" {
+		if _, err = LEZ.GetVTDUv2Token(); err != nil {
+			panic(err)
+		}
 	}
 	for _, v := range *PageList.DeviceInfos {
 		log.Info(v.Name, zap.String("Serial", v.DeviceSerial))
@@ -129,7 +135,11 @@ func main() {
 		}
 		if v, ok := PageList.VTM[RI.ResourceID]; ok {
 			run := func() error {
-				return startDeviceStream(LEZ, v, RI, DI)
+				return startDeviceStream(LEZ, v, RI, DI, nil)
+			}
+			if *idleWait {
+				runIdleWait(LEZ, v, RI, DI)
+				return
 			}
 			if !LEZ.PipeMode {
 				if err := run(); err != nil {
@@ -160,36 +170,204 @@ func main() {
 
 }
 
-func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) error {
-	if _, err := LEZ.GetVTDUv2Token(); err != nil {
+func runIdleWait(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGUSR1)
+	go func() {
+		for range sigs {
+			log.Info("idleWait: stop current stream")
+			LEZ.InterruptStream()
+		}
+	}()
+	warm := &warmVTM{}
+	warm.prefetch(LEZ, v, RI, DI)
+	log.Info("EZVIZ session ready, waiting for stream kick")
+	in := bufio.NewReader(os.Stdin)
+	for {
+		if _, err := in.ReadString('\n'); err != nil {
+			return
+		}
+		log.Info("idleWait: starting stream")
+		LEZ.BeginStream()
+		if err := startDeviceStream(LEZ, v, RI, DI, warm); err != nil {
+			log.Error("stream session ended", zap.Error(err))
+		} else {
+			log.Info("stream session ended")
+		}
+		warm.prefetch(LEZ, v, RI, DI)
+	}
+}
+
+type warmVTM struct {
+	mu  sync.Mutex
+	gen uint64
+	vs  *client.VTMStream
+}
+
+func (w *warmVTM) take() *client.VTMStream {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	vs := w.vs
+	w.vs = nil
+	w.gen++
+	return vs
+}
+
+func (w *warmVTM) prefetch(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) {
+	w.mu.Lock()
+	w.gen++
+	gen := w.gen
+	w.mu.Unlock()
+	go func() {
+		if _, err := LEZ.GetVTDUv2Token(); err != nil {
+			log.Error("idleWait: prefetch token", zap.Error(err))
+			return
+		}
+		vs, err := LEZ.ConnectVTM(v.ExternalIP, v.Port, RI, DI, "", v.PublicKey.Key)
+		if err != nil {
+			log.Error("idleWait: prefetch VTM", zap.Error(err))
+			return
+		}
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.gen != gen {
+			vs.Conn.Close()
+			return
+		}
+		if w.vs != nil && w.vs.Conn != nil {
+			_ = w.vs.Conn.Close()
+		}
+		w.vs = vs
+		log.Info("idleWait: warmed token + VTM")
+	}()
+}
+
+func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos, warm *warmVTM) error {
+	defer LEZ.DropConns()
+	var fifo *os.File
+	if *idleWait && *out != "" && *out != "-" {
+		defer func() {
+			if fifo != nil {
+				fifo.Close()
+				LEZ.StreamOut = nil
+			}
+		}()
+	}
+	for {
+		t0 := time.Now()
+		LEZ.DropConns()
+		if fifo == nil && *idleWait && *out != "" && *out != "-" {
+			f, err := os.OpenFile(*out, os.O_WRONLY, 0)
+			if err != nil {
+				unblockFifoWriter()
+				return err
+			}
+			fifo = f
+			LEZ.PipeMode = true
+			LEZ.StreamOut = f
+		}
+		VS, err := tokenAndVTM(LEZ, v, RI, DI, warm)
+		if err != nil {
+			if fifo == nil {
+				unblockFifoWriter()
+			}
+			return err
+		}
+		Tokens := *LEZ.VTDUTokens.Tokens
+		URL := LEZ.BuildVtmUrl(VS.VTMIP, VS.VTMPort, RI.DeviceSerial, RI.StreamBizUrl, Tokens[0], DI.ChannelNumber, LEZ.ClientType)
+		RStreamInfoRsp, err := LEZ.StartVTMStream(VS, URL)
+		if err != nil {
+			VS.Conn.Close()
+			if fifo == nil {
+				unblockFifoWriter()
+			}
+			return err
+		}
+		vtmAt := time.Since(t0)
+		IP, Port, _, _, err := LEZ.ParseVtmUrl(*RStreamInfoRsp.Streamurl)
+		if err != nil {
+			VS.Conn.Close()
+			if fifo == nil {
+				unblockFifoWriter()
+			}
+			return err
+		}
+		VTDUStream, err := LEZ.ConnectVTDU(IP, Port, *RStreamInfoRsp.Vtmstreamkey, v.PublicKey.Key)
+		if err != nil {
+			VS.Conn.Close()
+			if fifo == nil {
+				unblockFifoWriter()
+			}
+			return err
+		}
+		log.Info("stream handshake",
+			zap.Duration("vtm", vtmAt),
+			zap.Duration("vtdu", time.Since(t0)-vtmAt),
+			zap.Duration("total", time.Since(t0)))
+		var proactive atomic.Bool
+		var timer *time.Timer
+		if *maxStreamTime > 0 {
+			timer = time.AfterFunc(time.Duration(*maxStreamTime)*time.Second, func() {
+				proactive.Store(true)
+				log.Info("maxStreamTime reached, proactive VTDU reconnect")
+				VTDUStream.Conn.Close()
+			})
+		}
+		err = LEZ.StartVTDUStream(VTDUStream, URL)
+		if timer != nil {
+			timer.Stop()
+		}
+		VTDUStream.Conn.Close()
+		VS.Conn.Close()
+		if *idleWait && proactive.Load() && !LEZ.StreamInterrupted() {
+			log.Info("idleWait: reconnecting VTDU")
+			warm = nil
+			continue
+		}
 		return err
 	}
-	VS, err := LEZ.ConnectVTM(v.ExternalIP, v.Port, RI, DI, "", v.PublicKey.Key)
+}
+
+func tokenAndVTM(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos, warm *warmVTM) (*client.VTMStream, error) {
+	var vs *client.VTMStream
+	if warm != nil {
+		vs = warm.take()
+	}
+	haveTok := LEZ.VTDUTokens != nil && LEZ.VTDUTokens.Tokens != nil && len(*LEZ.VTDUTokens.Tokens) > 0
+	if vs != nil {
+		LEZ.TrackConn(vs.Conn)
+		if haveTok {
+			return vs, nil
+		}
+		if _, err := LEZ.GetVTDUv2Token(); err != nil {
+			vs.Conn.Close()
+			return nil, err
+		}
+		return vs, nil
+	}
+	tokCh := make(chan error, 1)
+	go func() { _, err := LEZ.GetVTDUv2Token(); tokCh <- err }()
+	dialed, err := LEZ.ConnectVTM(v.ExternalIP, v.Port, RI, DI, "", v.PublicKey.Key)
+	tokErr := <-tokCh
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer VS.Conn.Close()
-	Tokens := *LEZ.VTDUTokens.Tokens
-	URL := LEZ.BuildVtmUrl(VS.VTMIP, VS.VTMPort, RI.DeviceSerial, RI.StreamBizUrl, Tokens[0], DI.ChannelNumber, LEZ.ClientType)
-	RStreamInfoRsp, err := LEZ.StartVTMStream(VS, URL)
+	if tokErr != nil {
+		dialed.Conn.Close()
+		return nil, tokErr
+	}
+	return dialed, nil
+}
+
+// unblockFifoWriter opens and closes the output FIFO so a blocked ffmpeg
+// reader is released when the stream never started.
+func unblockFifoWriter() {
+	if !*idleWait || *out == "" || *out == "-" {
+		return
+	}
+	fd, err := syscall.Open(*out, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return err
+		return
 	}
-	IP, Port, _, _, err := LEZ.ParseVtmUrl(*RStreamInfoRsp.Streamurl)
-	if err != nil {
-		return err
-	}
-	VTDUStream, err := LEZ.ConnectVTDU(IP, Port, *RStreamInfoRsp.Vtmstreamkey, v.PublicKey.Key)
-	if err != nil {
-		return err
-	}
-	defer VTDUStream.Conn.Close()
-	if *maxStreamTime > 0 {
-		t := time.AfterFunc(time.Duration(*maxStreamTime)*time.Second, func() {
-			log.Info("maxStreamTime reached, proactive VTDU reconnect")
-			VTDUStream.Conn.Close()
-		})
-		defer t.Stop()
-	}
-	return LEZ.StartVTDUStream(VTDUStream, URL)
+	syscall.Close(fd)
 }

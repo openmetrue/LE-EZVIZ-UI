@@ -35,6 +35,14 @@ func main() {
 	devStatusLoad()
 	statsLoad()
 	go streamer.supervise()
+	if streamer.configured() {
+		email, password, serial, region := streamer.creds()
+		go func() {
+			if err := streamer.ensureHold(email, password, serial, region); err != nil {
+				log.Printf("streamer: session: %v", err)
+			}
+		}()
+	}
 	go statsCollector()
 	go logRotator()
 

@@ -18,12 +18,13 @@ type VTMStream struct {
 }
 
 func (LEZ *LE_EZVIZ_Client) ConnectVTM(vtmIP string, vtmPort int, deviceResource Resource, deviceInfos DeviceInfos, devicePwd, vtmPublicKey string) (*VTMStream, error) {
-	sock, err := net.Dial("tcp", vtmIP+":"+strconv.Itoa(vtmPort))
+	sock, err := dialTCP(vtmIP + ":" + strconv.Itoa(vtmPort))
 	if err != nil {
 		log.Error("Error dialing VTM", zap.Error(err))
 		return nil, err
 	}
 	VS := &VTMStream{Conn: sock, VTMIP: vtmIP, VTMPort: vtmPort, VTMPublicKey: vtmPublicKey}
+	LEZ.TrackConn(sock)
 	return VS, nil
 }
 

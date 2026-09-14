@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,9 +27,13 @@ type Streamer struct {
 	startedAt time.Time
 	lastTouch time.Time
 	cancel    context.CancelFunc
+	hold      *exec.Cmd
+	holdIn    io.WriteCloser
 }
 
 func NewStreamer() *Streamer { return &Streamer{} }
+
+func fifoPath() string { return filepath.Join(*workDir, "stream.ps") }
 
 func (s *Streamer) Touch() {
 	s.mu.Lock()
@@ -41,7 +47,93 @@ func (s *Streamer) Kick() {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.killHoldLocked()
 	s.mu.Unlock()
+}
+
+func (s *Streamer) killHoldLocked() {
+	if s.holdIn != nil {
+		s.holdIn.Close()
+		s.holdIn = nil
+	}
+	if s.hold != nil && s.hold.Process != nil {
+		s.hold.Process.Kill()
+	}
+	s.hold = nil
+}
+
+func (s *Streamer) ensureHold(email, password, serial, region string) error {
+	s.mu.Lock()
+	if s.hold != nil && s.hold.Process != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	fifo := fifoPath()
+	_ = os.Remove(fifo)
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil && !os.IsExist(err) {
+		return err
+	}
+	cmd := exec.Command(*bridgePath,
+		"-region", region,
+		"-deviceSerial", serial,
+		"-maxStreamTime", "170",
+		"-logLevel", bridgeLogLevel(),
+		"-out", fifo,
+		"-idleWait",
+		"-stdout=false", "-logFile=true")
+	cmd.Dir = *workDir
+	cmd.Env = append(os.Environ(),
+		"EZVIZ_EMAIL="+email,
+		"EZVIZ_PASSWORD="+password,
+	)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+	var errFile *os.File
+	if f, err := os.OpenFile(filepath.Join(*workDir, "bridge.err"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		cmd.Stderr = f
+		errFile = f
+	}
+	if err := cmd.Start(); err != nil {
+		stdin.Close()
+		if errFile != nil {
+			errFile.Close()
+		}
+		return err
+	}
+	s.mu.Lock()
+	if s.hold != nil {
+		s.mu.Unlock()
+		stdin.Close()
+		cmd.Process.Kill()
+		if errFile != nil {
+			errFile.Close()
+		}
+		return nil
+	}
+	s.hold = cmd
+	s.holdIn = stdin
+	s.mu.Unlock()
+	log.Printf("streamer: holding EZVIZ session")
+	go func() {
+		err := cmd.Wait()
+		if errFile != nil {
+			errFile.Close()
+		}
+		s.mu.Lock()
+		if s.hold == cmd {
+			s.hold = nil
+			s.holdIn = nil
+		}
+		s.mu.Unlock()
+		if err != nil {
+			log.Printf("streamer: session process exited: %v", err)
+		}
+	}()
+	return nil
 }
 
 func alwaysOn() bool {
@@ -112,6 +204,12 @@ func (s *Streamer) supervise() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
+		if s.configured() {
+			email, password, serial, region := s.creds()
+			if err := s.ensureHold(email, password, serial, region); err != nil {
+				log.Printf("streamer: session: %v", err)
+			}
+		}
 		s.maybeStart()
 		s.mu.Lock()
 		desired := s.wantedLocked()
@@ -120,7 +218,11 @@ func (s *Streamer) supervise() {
 			log.Printf("streamer: idle %s, stopping so the camera can sleep", idleTimeout)
 			s.cancel()
 		case desired && s.running && s.cancel != nil:
-			if time.Since(s.startedAt) >= 60*time.Second {
+			age := time.Since(s.startedAt)
+			if age >= 20*time.Second && !hlsPlayable() {
+				log.Printf("streamer: watchdog — no playable HLS after 20s, restarting pipeline")
+				s.cancel()
+			} else if age >= 60*time.Second {
 				if st, err := os.Stat(filepath.Join(*workDir, "hls", playlistName)); err == nil &&
 					time.Since(st.ModTime()) > 12*time.Second {
 					log.Printf("streamer: watchdog — segments stale for 12s, restarting pipeline")
@@ -156,57 +258,36 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	if err := os.MkdirAll(hlsDir, 0o755); err != nil {
 		return err
 	}
+	if err := s.ensureHold(email, password, serial, region); err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
 	clearHLS()
 	defer clearHLS()
 
-	bridge := exec.CommandContext(ctx, *bridgePath,
-		"-region", region,
-		"-deviceSerial", serial,
-		"-maxStreamTime", "170",
-		"-logLevel", bridgeLogLevel(),
-		"-out=-", "-stdout=false", "-logFile=true")
-	bridge.Dir = *workDir
-	bridge.Env = append(os.Environ(),
-		"EZVIZ_EMAIL="+email,
-		"EZVIZ_PASSWORD="+password,
-	)
-
 	ff := exec.CommandContext(ctx, *ffmpegPath,
 		"-hide_banner", "-loglevel", "warning",
-		"-fflags", "+genpts",
-		"-f", "mpeg", "-probesize", "1000000",
-		"-i", "pipe:0",
+		"-fflags", "+genpts+nobuffer", "-flags", "low_delay",
+		"-probesize", "16384", "-analyzeduration", "0",
+		"-f", "mpeg", "-i", fifoPath(),
+		"-flush_packets", "1",
 		"-map", "0:v:0", "-c:v", "copy", "-tag:v", "hvc1",
 		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
-		"-f", "hls", "-hls_time", "2", "-hls_list_size", "90",
+		"-f", "hls", "-hls_time", "1", "-hls_init_time", "0.4", "-hls_list_size", "180",
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
-		"-hls_flags", "delete_segments+independent_segments+temp_file",
+		"-hls_flags", "delete_segments+temp_file+split_by_time+omit_endlist",
 		filepath.Join(hlsDir, playlistName))
 	ff.Dir = *workDir
-
-	pipe, err := bridge.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	ff.Stdin = pipe
 	if f, err := os.OpenFile(filepath.Join(*workDir, "ffmpeg.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		defer f.Close()
 		ff.Stderr = f
 	}
-	if f, err := os.OpenFile(filepath.Join(*workDir, "bridge.err"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-		defer f.Close()
-		bridge.Stderr = f
-	}
-
-	if err := bridge.Start(); err != nil {
-		return fmt.Errorf("bridge start: %w", err)
-	}
 	if err := ff.Start(); err != nil {
-		bridge.Process.Kill()
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
 	s.mu.Lock()
+	hold := s.hold
+	holdIn := s.holdIn
 	s.running = true
 	s.restarts++
 	s.startedAt = time.Now()
@@ -214,29 +295,36 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		s.lastError = ""
 	}
 	s.mu.Unlock()
+	if holdIn != nil {
+		if _, err := holdIn.Write([]byte("\n")); err != nil {
+			ff.Process.Kill()
+			return fmt.Errorf("session kick: %w", err)
+		}
+	}
 	log.Printf("streamer: started (run #%d)", s.restarts)
 
-	done := make(chan error, 2)
-	go func() { done <- bridge.Wait() }()
+	done := make(chan error, 1)
 	go func() { done <- ff.Wait() }()
-
-	var firstErr error
-	got := 0
 	select {
 	case <-ctx.Done():
-	case firstErr = <-done:
-		got = 1
-	}
-	bridge.Process.Kill()
-	ff.Process.Kill()
-	waitBoth(done, got)
-	if ctx.Err() != nil {
+		if hold != nil && hold.Process != nil {
+			_ = hold.Process.Signal(syscall.SIGUSR1)
+		}
+		ff.Process.Kill()
+		<-done
 		return nil
+	case err := <-done:
+		if hold != nil && hold.Process != nil {
+			_ = hold.Process.Signal(syscall.SIGUSR1)
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("pipeline exited: %v", err)
+		}
+		return fmt.Errorf("pipeline exited cleanly")
 	}
-	if firstErr != nil {
-		return fmt.Errorf("pipeline exited: %v", firstErr)
-	}
-	return fmt.Errorf("pipeline exited cleanly")
 }
 
 // waitBoth drains remaining Wait() results. already is how many were already
@@ -275,12 +363,12 @@ func hlsPlayable() bool {
 			continue
 		}
 		inf, err := os.Stat(filepath.Join(dir, filepath.Base(ln)))
-		if err != nil || inf.Size() < 512 {
+		if err != nil || inf.Size() < 100 {
 			continue
 		}
 		n++
 	}
-	return n >= 3
+	return n >= 1
 }
 
 func waitForFile(path string, d time.Duration) bool {
@@ -296,7 +384,7 @@ func waitForFile(path string, d time.Duration) bool {
 		if !running && !starting {
 			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

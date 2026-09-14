@@ -9,9 +9,12 @@ import (
 	"io"
 	"le-ezviz-vs/api"
 	"le-ezviz-vs/logging"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -73,6 +76,51 @@ type LE_EZVIZ_Client struct {
 	PipeMode      bool
 	StreamOut     io.Writer
 	StreamFile    string // raw dump path when not in pipe mode; empty means "stream"
+	streamMu      sync.Mutex
+	liveConns     []net.Conn
+	stopN         int32
+}
+
+func (LEZ *LE_EZVIZ_Client) TrackConn(c net.Conn) {
+	LEZ.streamMu.Lock()
+	LEZ.liveConns = append(LEZ.liveConns, c)
+	LEZ.streamMu.Unlock()
+}
+
+func dialTCP(addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 8 * time.Second, KeepAlive: 20 * time.Second}
+	sock, err := d.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := sock.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+	return sock, nil
+}
+
+func (LEZ *LE_EZVIZ_Client) InterruptStream() {
+	atomic.StoreInt32(&LEZ.stopN, 1)
+	LEZ.streamMu.Lock()
+	conns := append([]net.Conn(nil), LEZ.liveConns...)
+	LEZ.streamMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+func (LEZ *LE_EZVIZ_Client) BeginStream() {
+	atomic.StoreInt32(&LEZ.stopN, 0)
+}
+
+func (LEZ *LE_EZVIZ_Client) StreamInterrupted() bool {
+	return atomic.LoadInt32(&LEZ.stopN) != 0
+}
+
+func (LEZ *LE_EZVIZ_Client) DropConns() {
+	LEZ.streamMu.Lock()
+	LEZ.liveConns = nil
+	LEZ.streamMu.Unlock()
 }
 
 func NewLE_EZVIZ_Client(email, password, region, featurecode, terminalname, clientNo string, timeoutSeconds int) (*LE_EZVIZ_Client, error) {

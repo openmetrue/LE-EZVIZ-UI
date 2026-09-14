@@ -40,7 +40,7 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
   .muted { color:#9aa4b2; font-size:13px; }
   .player { position:relative; width:100%; aspect-ratio:16/9; border-radius:10px; background:#000; overflow:hidden; margin-top:8px; }
   .player img, .player video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  .player video { z-index:1; background:transparent; }
+  .player video { z-index:1; background:#000; }
   code { background:#0c0f14; padding:2px 6px; border-radius:6px; font-size:12px; word-break:break-all; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .seg { display:flex; width:100%; max-width:100%; padding:3px; gap:2px; background:#12161c; border:1px solid #2a3038; border-radius:10px; box-sizing:border-box; }
@@ -349,22 +349,26 @@ let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestart
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
   el.addEventListener("playing", () => { hasPlayed = true; prev.style.display = "none"; if (st.textContent === t.waking) st.textContent = ""; });
-  el.addEventListener("error", () => { if (attached) detach(); });
+  el.addEventListener("error", () => {
+    if (!attached) return;
+    attached = false;
+    cooldownUntil = Date.now() + 400;
+  });
 }
 bindVideo(vid());
 
 function attach() {
-  if (Date.now() < cooldownUntil) return;
+  if (attached || Date.now() < cooldownUntil) return;
   const v = vid();
+  if (!v.canPlayType("application/vnd.apple.mpegurl")) {
+    st.textContent = t.noHls;
+    return;
+  }
   attached = true;
   hasPlayed = false;
   attachAt = Date.now();
   goneHits = 0;
-  if (!v.canPlayType("application/vnd.apple.mpegurl")) {
-    st.textContent = t.noHls;
-    attached = false;
-    return;
-  }
+  prev.style.display = "none";
   v.src = base + "/hls/`+playlistName+`?t=" + Date.now();
   v.play().catch(()=>{});
 }
@@ -396,11 +400,14 @@ setInterval(() => {
 
 async function poll() {
   if (document.visibilityState !== "visible") {
-    if (attached) detach();
+    const v = vid();
+    if (attached && !v.paused) v.pause();
   } else try {
     const r = await fetch(base + "/start", {method: "POST"});
     if (document.visibilityState !== "visible") { setTimeout(poll, 1000); return; }
     if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, 1000); return; }
+    if (!attached) attach();
+    else if (vid().paused) vid().play().catch(()=>{});
     const s = await (await fetch(base + "/api/status")).json();
     if (s.device && s.device.battery) {
       const d = s.device;
@@ -419,10 +426,9 @@ async function poll() {
     if (ready) { readyHits++; goneHits = 0; } else { readyHits = 0; goneHits++; }
     const dead = !s.running && !s.starting;
     if (attached && dead && goneHits >= 2) detach();
-    if (ready && !attached && readyHits >= 1) attach();
     if (!s.configured) st.textContent = t.notConfigured;
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
-    else if (!hasPlayed && (s.starting || s.running) && !attached) st.textContent = t.waking;
+    else if (!hasPlayed && (s.starting || s.running)) st.textContent = t.waking;
     else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
   } catch (e) {}
   setTimeout(poll, 1000);
@@ -509,17 +515,33 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.HasSuffix(name, ".m3u8") {
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		if t := r.URL.Query().Get("token"); t != "" && validToken(r) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			w.Write(rewritePlaylist(data, t))
+		data, err := os.ReadFile(path)
+		if err != nil {
+			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
+		token := ""
+		if t := r.URL.Query().Get("token"); t != "" && validToken(r) {
+			token = t
+		}
+		w.Write(livePlaylist(data, token))
+		return
 	}
 	http.ServeFile(w, r, path)
+}
+
+func livePlaylist(data []byte, token string) []byte {
+	if token != "" {
+		data = rewritePlaylist(data, token)
+	}
+	s := string(data)
+	if !strings.Contains(s, "#EXT-X-START:") {
+		s = strings.Replace(s, "#EXTM3U\n", "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-START:TIME-OFFSET=0\n", 1)
+	}
+	if strings.Contains(s, "#EXT-X-TARGETDURATION:0") {
+		s = strings.Replace(s, "#EXT-X-TARGETDURATION:0", "#EXT-X-TARGETDURATION:1", 1)
+	}
+	return []byte(s)
 }
 
 func rewritePlaylist(data []byte, token string) []byte {
