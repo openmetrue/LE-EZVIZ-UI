@@ -28,3 +28,18 @@ func TestBatteryPollMinDefault(t *testing.T) {
 		t.Fatalf("got %d", batteryPollMin())
 	}
 }
+
+func TestChartGapAllowsHourlyPoll(t *testing.T) {
+	if chartGapSec(5) != 45*60 {
+		t.Fatalf("5 min: %d", chartGapSec(5))
+	}
+	if chartGapSec(15) != 45*60 {
+		t.Fatalf("15 min: %d", chartGapSec(15))
+	}
+	if chartGapSec(30) != 75*60 {
+		t.Fatalf("30 min: %d", chartGapSec(30))
+	}
+	if g := chartGapSec(60); g <= 60*60 {
+		t.Fatalf("1 h poll must connect hourly samples, gap %d", g)
+	}
+}

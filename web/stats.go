@@ -42,6 +42,16 @@ func batteryPollEvery() time.Duration {
 	return time.Duration(batteryPollMin()) * time.Minute
 }
 
+// chartGapSec is how far apart samples may be before the chart breaks the line.
+// One missed poll is still a line; two missed polls become a gap.
+func chartGapSec(pollMin int) int {
+	g := pollMin * 150
+	if g < 45*60 {
+		return 45 * 60
+	}
+	return g
+}
+
 func statsPath() string { return filepath.Join(*workDir, "stats.json") }
 
 func statsLoad() {
@@ -222,6 +232,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 const base = "`+*basePath+`";
 const loc = "`+localeFor(lang)+`";
 const pollMin = "`+strconv.Itoa(pollMin)+`";
+const gapSec = `+strconv.Itoa(chartGapSec(pollMin))+`;
 const t = `+string(jsT)+`;
 const c = document.getElementById("chart");
 const wrap = document.getElementById("chartwrap");
@@ -303,7 +314,7 @@ function draw() {
   ctx.strokeStyle = "#34d399"; ctx.lineWidth = 2; ctx.beginPath();
   let pen = false, prev = 0;
   for (const p of pts) {
-    if (pen && p.ts - prev > 45 * 60) pen = false;
+    if (pen && p.ts - prev > gapSec) pen = false;
     if (pen) ctx.lineTo(g.px(p.ts), g.py(p.b)); else ctx.moveTo(g.px(p.ts), g.py(p.b));
     pen = true; prev = p.ts;
   }
