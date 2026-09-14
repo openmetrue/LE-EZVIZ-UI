@@ -24,6 +24,11 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	running, starting, _, _, _ := streamer.Status()
+	if !running && !starting {
+		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
+		return
+	}
 	dir := hlsDir()
 	manifest, err := os.ReadFile(filepath.Join(dir, playlistName))
 	if err != nil {

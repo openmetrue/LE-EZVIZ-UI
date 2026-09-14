@@ -345,7 +345,6 @@ const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 const modeEl = document.getElementById("mode");
 let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, readyHits = 0, goneHits = 0;
-let pollTimer = 0;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -386,7 +385,7 @@ function detach() {
 
 setInterval(() => {
   const v = vid();
-  if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 25000) detach();
+  if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 45000) detach();
   if (!attached || v.paused || !hasPlayed) { lastT = -1; stuckSince = 0; return; }
   if (v.currentTime === lastT) {
     if (!stuckSince) stuckSince = Date.now();
@@ -395,22 +394,14 @@ setInterval(() => {
   lastT = v.currentTime;
 }, 4000);
 
-function tabActive() { return document.visibilityState === "visible"; }
-
-function schedulePoll(ms) {
-  if (pollTimer) clearTimeout(pollTimer);
-  pollTimer = setTimeout(poll, ms);
-}
-
 async function poll() {
-  pollTimer = 0;
-  if (!tabActive()) return;
-  try {
+  if (document.visibilityState !== "visible") {
+    if (attached) detach();
+  } else try {
     const r = await fetch(base + "/start", {method: "POST"});
-    if (!tabActive()) return;
-    if (!r.ok) { st.textContent = t.relogin; schedulePoll(4000); return; }
+    if (document.visibilityState !== "visible") { setTimeout(poll, 1000); return; }
+    if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, 1000); return; }
     const s = await (await fetch(base + "/api/status")).json();
-    if (!tabActive()) return;
     if (s.device && s.device.battery) {
       const d = s.device;
       let line = t.battery + ": " + d.battery + "%";
@@ -421,7 +412,7 @@ async function poll() {
     }
     if (modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
     if (s.restarts && s.restarts !== seenRestarts) {
-      if (seenRestarts) detach();
+      if (seenRestarts && attached) detach();
       seenRestarts = s.restarts;
     }
     const ready = !!(s.running && s.manifest);
@@ -433,19 +424,10 @@ async function poll() {
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
     else if (!hasPlayed && (s.starting || s.running) && !attached) st.textContent = t.waking;
     else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
-    schedulePoll((ready && attached) ? 2000 : 1000);
-  } catch(e) { if (tabActive()) schedulePoll(3000); }
+  } catch (e) {}
+  setTimeout(poll, 1000);
 }
-
-function onTab() {
-  if (tabActive()) poll();
-  else {
-    if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
-    detach();
-  }
-}
-document.addEventListener("visibilitychange", onTab);
-window.addEventListener("pageshow", onTab);
+poll();
 
 document.getElementById("save").onclick = async () => {
   st.textContent = t.saving;
