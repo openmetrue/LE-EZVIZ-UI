@@ -239,7 +239,6 @@ func changeSitePassword(r *http.Request, lang string) string {
 }
 
 func handlePlayer(w http.ResponseWriter, r *http.Request) {
-	streamer.Touch()
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
 	shareURL := publicOrigin(r) + *basePath + "/hls/" + playlistName + "?token=" + cfgCopy().DeviceToken
@@ -283,6 +282,7 @@ prev.onload = () => { prev.style.display = "block"; };
 const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, readyHits = 0, goneHits = 0;
+let viewing = false, pollTimer = 0;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -332,11 +332,36 @@ setInterval(() => {
   lastT = v.currentTime;
 }, 4000);
 
+function pingStop() {
+  const url = base + "/stop";
+  try {
+    if (navigator.sendBeacon && navigator.sendBeacon(url)) return;
+  } catch (e) {}
+  fetch(url, {method: "POST", keepalive: true, credentials: "same-origin"}).catch(()=>{});
+}
+
+function sleepStream() {
+  if (!viewing) return;
+  viewing = false;
+  if (pollTimer) { clearTimeout(pollTimer); pollTimer = 0; }
+  detach();
+  pingStop();
+}
+
+function wakeStream() {
+  if (viewing) return;
+  viewing = true;
+  poll();
+}
+
 async function poll() {
+  if (!viewing) return;
   try {
     const r = await fetch(base + "/start", {method: "POST"});
-    if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, 4000); return; }
+    if (!viewing) return;
+    if (!r.ok) { st.textContent = t.relogin; pollTimer = setTimeout(poll, 4000); return; }
     const s = await (await fetch(base + "/api/status")).json();
+    if (!viewing) return;
     if (s.device && s.device.battery) {
       const d = s.device;
       let line = t.battery + ": " + d.battery + "%";
@@ -358,10 +383,17 @@ async function poll() {
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
     else if (!hasPlayed && (s.starting || s.running) && !attached) st.textContent = t.waking;
     else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
-    setTimeout(poll, (ready && attached) ? 2000 : 1000);
-  } catch(e) { setTimeout(poll, 3000); }
+    pollTimer = setTimeout(poll, (ready && attached) ? 2000 : 1000);
+  } catch(e) { if (viewing) pollTimer = setTimeout(poll, 3000); }
 }
-poll();
+if (document.visibilityState !== "hidden") wakeStream();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") sleepStream();
+  else wakeStream();
+});
+window.addEventListener("pagehide", sleepStream);
+window.addEventListener("pageshow", wakeStream);
 
 document.getElementById("save").onclick = async () => {
   st.textContent = t.saving;
@@ -395,6 +427,11 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func handleStop(w http.ResponseWriter, r *http.Request) {
+	streamer.Stop()
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func handlePreview(w http.ResponseWriter, r *http.Request) {
 	p := previewPath()
 	if _, err := os.Stat(p); err != nil {
@@ -412,7 +449,12 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	streamer.Touch()
+	// Cookie HLS from the live tab must not keep the camera awake — only the
+	// JS heartbeat (/start) does. A share-token player has no JS, so token
+	// requests still count as a viewer.
+	if validToken(r) {
+		streamer.Touch()
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	path := filepath.Join(hlsDir(), name)
 	if _, err := os.Stat(path); err != nil {

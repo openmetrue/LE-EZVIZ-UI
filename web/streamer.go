@@ -45,6 +45,18 @@ func (s *Streamer) Kick() {
 	s.mu.Unlock()
 }
 
+// Stop kills the pipeline and clears lastTouch so supervise will not
+// restart until the next heartbeat (/start) or a share-token HLS request.
+func (s *Streamer) Stop() {
+	s.mu.Lock()
+	s.lastTouch = time.Time{}
+	if s.cancel != nil {
+		log.Printf("streamer: viewer gone, stopping so the camera can sleep")
+		s.cancel()
+	}
+	s.mu.Unlock()
+}
+
 func (s *Streamer) maybeStart() {
 	if !s.configured() {
 		return

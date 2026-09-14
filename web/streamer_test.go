@@ -24,6 +24,21 @@ func TestWaitBothFromScratch(t *testing.T) {
 	waitBoth(done, 0)
 }
 
+func TestStopClearsViewer(t *testing.T) {
+	s := NewStreamer()
+	s.Touch()
+	if s.lastTouch.IsZero() {
+		t.Fatal("Touch should set lastTouch")
+	}
+	s.Stop()
+	if !s.lastTouch.IsZero() {
+		t.Fatal("Stop should forget the viewer so idle restart cannot happen")
+	}
+	if s.cancel != nil {
+		t.Fatal("Stop should not leave a live cancel when nothing was running")
+	}
+}
+
 func TestWaitBothDoesNotHang(t *testing.T) {
 	done := make(chan error, 2)
 	go func() {
