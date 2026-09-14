@@ -23,6 +23,11 @@ var TerminalName = "LE-EZ"
 var Client *http.Client
 var log = logging.Log
 
+// SetLogger rebinds the package logger after logging.CreateLogger replaces
+// logging.Log. Without this, client keeps logging to the init() logger that
+// writes to stdout — which corrupts the video stream in pipe mode (-out=-).
+func SetLogger(l *zap.Logger) { log = l }
+
 const (
 	USE_API_URL = iota
 	USE_DOM_URL
@@ -65,6 +70,9 @@ type LE_EZVIZ_Client struct {
 	API_URL       string
 	DOM_URL       string
 	AUTH_URL      string
+	PipeMode      bool
+	StreamOut     io.Writer
+	StreamFile    string // raw dump path when not in pipe mode; empty means "stream"
 }
 
 func NewLE_EZVIZ_Client(email, password, region, featurecode, terminalname, clientNo string, timeoutSeconds int) (*LE_EZVIZ_Client, error) {

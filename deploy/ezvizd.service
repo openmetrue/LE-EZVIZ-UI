@@ -1,0 +1,23 @@
+[Unit]
+Description=LE-EZVIZ-UI (ezvizd + le-ezviz-vs HLS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ezvizd/ezvizd \
+  -listen 127.0.0.1:8090 \
+  -config /opt/ezvizd/config.json \
+  -workdir /var/lib/ezvizd \
+  -bridge /opt/ezvizd/le-ezviz-vs \
+  -ffmpeg /usr/bin/ffmpeg \
+  -base /ezviz \
+  -idle 30
+Restart=always
+RestartSec=2
+MemoryMax=600M
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

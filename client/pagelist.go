@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"le-ezviz-vs/api"
 	"strconv"
@@ -88,6 +89,88 @@ type DeviceInfos struct {
 	ExtStatus            int     `json:"extStatus"`
 	Classify             int     `json:"classify"`
 	Tags                 *string `json:"tags"`
+}
+
+// GetStatusRaw returns the raw pagelist JSON with filter STATUS,WIFI.
+func (LEZ *LE_EZVIZ_Client) GetStatusRaw() (string, error) {
+	resp, err := LEZ.QueryEncodedAPIRequest("GET", api.V3_USERDEVICES_V1_RESOURCES_PAGELIST, USE_API_URL, map[string]string{"sessionId": *LEZ.LoginResponse.LoginSession.SessionId, "clientType": strconv.Itoa(LEZ.ClientType), "clientNo": LEZ.ClientNo, "clientVersion": "2,5,1,2109068", "groupId": "-1", "limit": "50", "offset": "0", "filter": "STATUS,WIFI"})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(bodyBytes), nil
+}
+
+// DeviceStatus is a compact device status parsed from the cloud pagelist.
+type DeviceStatus struct {
+	Battery          string `json:"battery"`
+	Online           bool   `json:"online"`
+	WifiSignal       int    `json:"wifi_signal"`
+	WifiSSID         string `json:"wifi_ssid"`
+	PirStatus        int    `json:"pir"`
+	UpgradeAvailable int    `json:"upgrade_available"`
+	Cover            string `json:"cover,omitempty"`
+	KeepAliveSec     int    `json:"keep_alive_sec"`
+}
+
+// GetDeviceStatus reads STATUS and WIFI sections of pagelist.
+// This is a cloud API call — it does not start a stream, so a sleeping camera stays asleep.
+func (LEZ *LE_EZVIZ_Client) GetDeviceStatus(deviceSerial string) (*DeviceStatus, error) {
+	raw, err := LEZ.GetStatusRaw()
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		STATUS map[string]struct {
+			PirStatus        int `json:"pirStatus"`
+			UpgradeAvailable int `json:"upgradeAvailable"`
+			Optionals        struct {
+				PowerRemaining    string `json:"powerRemaining"`
+				OnlineStatus      string `json:"OnlineStatus"`
+				BatteryWorkStatus string `json:"Battery_WorkStatus"`
+			} `json:"optionals"`
+		} `json:"STATUS"`
+		WIFI map[string]struct {
+			Signal int    `json:"signal"`
+			SSID   string `json:"ssid"`
+		} `json:"WIFI"`
+	}
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, err
+	}
+	st, ok := parsed.STATUS[deviceSerial]
+	if !ok {
+		return nil, fmt.Errorf("device %s not found in STATUS", deviceSerial)
+	}
+	ds := &DeviceStatus{
+		Battery:          st.Optionals.PowerRemaining,
+		Online:           st.Optionals.OnlineStatus == "1",
+		PirStatus:        st.PirStatus,
+		UpgradeAvailable: st.UpgradeAvailable,
+	}
+	var bws struct {
+		KeepAlive int `json:"KeepAlive"`
+	}
+	if err := json.Unmarshal([]byte(st.Optionals.BatteryWorkStatus), &bws); err == nil {
+		ds.KeepAliveSec = bws.KeepAlive
+	}
+	if w, ok := parsed.WIFI[deviceSerial]; ok {
+		ds.WifiSignal = w.Signal
+		ds.WifiSSID = w.SSID
+	}
+	if pl, err := LEZ.GetPageList(); err == nil && pl.ResourceInfos != nil {
+		for _, r := range *pl.ResourceInfos {
+			if r.DeviceSerial == deviceSerial && r.ResourceCover != "" {
+				ds.Cover = r.ResourceCover
+				break
+			}
+		}
+	}
+	return ds, nil
 }
 
 // ToDo - add custom params

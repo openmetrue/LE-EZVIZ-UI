@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test
+        run: cd web && go test ./...
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/le-ezviz-vs-linux-amd64 .
+          (cd web && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../dist/ezvizd-linux-amd64 .)
+          cp deploy/ezvizd.service dist/ezvizd.service
+          cp deploy/install.sh dist/install.sh
+          chmod +x dist/install.sh dist/ezvizd-linux-amd64 dist/le-ezviz-vs-linux-amd64
+          (cd dist && sha256sum ezvizd-linux-amd64 le-ezviz-vs-linux-amd64 ezvizd.service install.sh > sha256sums.txt)
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

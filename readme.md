@@ -1,3 +1,38 @@
+# LE-EZVIZ-UI
+
+A web interface for EZVIZ cameras that do not expose local RTSP. Built on [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS).
+
+## Rationale
+
+EZVIZ HP2 and similar devices do not provide a local RTSP endpoint. Live video is available only through the official mobile application. Time from launching the app to a usable frame is ~15 seconds: splash screen, device list, then a second confirmation to start viewing.
+
+Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand HLS, site authentication, a recording archive, and battery history.
+
+Build and deployment: [`web/README.md`](web/README.md).
+
+## Install
+
+Linux amd64 with systemd. Binaries come from [GitHub Releases](https://github.com/openmetrue/LE-EZVIZ-UI/releases); the script below fetches the latest:
+
+```sh
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/install.sh | sudo bash
+```
+
+That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, enables `ezvizd.service`, and leaves an existing `config.json` in place. Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`), then open the site once to set the password.
+
+Pin a version:
+
+```sh
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v0.1.0/install.sh \
+  | sudo EZVIZ_VERSION=v0.1.0 bash
+```
+
+Publishing a build: tag and push (`git tag v0.1.0 && git push origin v0.1.0`). CI attaches `ezvizd-linux-amd64` and `le-ezviz-vs-linux-amd64` to the release.
+
+The original LE-EZVIZ-VS README follows.
+
+---
+
 # LE-EZVIZ Video Stream
 
 LE-EZVIZ-VS, this is a piece of my wider project of creating a fully fledged program to control and connect to EZVIZ cameras in my own implementation. I have many modules as it makes testing easier and more will be released when ready. I am releasing this to hopefully spur on more development and get more help and hands on with the streaming implementation as not much is out there.
