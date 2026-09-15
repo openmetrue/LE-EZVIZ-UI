@@ -22,12 +22,13 @@ import (
 const h264Fmtp = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
 
 var (
-	rtcAPI     *webrtc.API
-	rtcMu      sync.Mutex
-	rtcTrack   *webrtc.TrackLocalStaticSample
-	rtcSPS     []byte
-	rtcPPS     []byte
-	rtcNeedIDR bool
+	rtcAPI       *webrtc.API
+	rtcMu        sync.Mutex
+	rtcTrack     *webrtc.TrackLocalStaticSample
+	rtcSPS       []byte
+	rtcPPS       []byte
+	rtcNeedIDR   bool
+	rtcPLIAt     time.Time
 )
 
 func rtcEnabled() bool { return rtcAPI != nil }
@@ -155,6 +156,12 @@ func rtcDropTrack() {
 	ringClear()
 }
 
+func rtcRequestIDR() {
+	rtcMu.Lock()
+	rtcNeedIDR = true
+	rtcMu.Unlock()
+}
+
 func pumpH264(r io.Reader) {
 	hr, err := h264reader.NewReader(r)
 	if err != nil {
@@ -162,6 +169,7 @@ func pumpH264(r io.Reader) {
 		return
 	}
 	logged := false
+	var lastWrite time.Time
 	for {
 		nal, err := hr.NextNAL()
 		if err != nil {
@@ -209,7 +217,17 @@ func pumpH264(r io.Reader) {
 		}
 		ringPush(au, idr)
 		if track != nil {
-			if err := track.WriteSample(media.Sample{Data: au, Duration: time.Second / 15}); err != nil {
+			// Pace RTP by real inter-arrival, capped so a slow camera
+			// doesn't inflate the browser jitter buffer.
+			dur := 66 * time.Millisecond // ~15fps default
+			now := time.Now()
+			if !lastWrite.IsZero() {
+				if d := now.Sub(lastWrite); d >= 33*time.Millisecond && d <= 120*time.Millisecond {
+					dur = d
+				}
+			}
+			lastWrite = now
+			if err := track.WriteSample(media.Sample{Data: au, Duration: dur}); err != nil {
 				if errors.Is(err, io.ErrClosedPipe) {
 					continue
 				}
@@ -316,11 +334,17 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-					// Drop P-frames until the next encoder IDR so Safari can resync.
-					// Replaying a stale IDR then continuing with newer P-frames makes gray worse.
 					rtcMu.Lock()
+					if rtcNeedIDR || time.Since(rtcPLIAt) < 100*time.Millisecond {
+						rtcMu.Unlock()
+						continue
+					}
+					rtcPLIAt = time.Now()
 					rtcNeedIDR = true
 					rtcMu.Unlock()
+					log.Printf("webrtc: PLI/FIR — replay IDR, wait fresh keyframe")
+					// Seed decoder now; pump drops P-frames until a fresh IDR
+					// (P after a replayed IDR referencing a newer lost key makes gray worse).
 					if idr := ringLastIDR(); len(idr) > 0 {
 						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
 					}

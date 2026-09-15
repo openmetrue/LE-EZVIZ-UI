@@ -467,7 +467,7 @@ bindVideo(vid());
 function waitIce(conn) {
   return new Promise((res) => {
     if (conn.iceGatheringState === "complete") { res(); return; }
-    const tmr = setTimeout(() => res(), 100);
+    const tmr = setTimeout(() => res(), 50);
     const onCand = () => { clearTimeout(tmr); conn.removeEventListener("icecandidate", onCand); res(); };
     conn.addEventListener("icecandidate", onCand);
     conn.addEventListener("icegatheringstatechange", () => {

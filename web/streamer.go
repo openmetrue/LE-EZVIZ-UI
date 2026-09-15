@@ -271,17 +271,22 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-threads", "1", "-filter_threads", "1",
-		"-fflags", "+genpts+nobuffer", "-flags", "low_delay",
-		"-probesize", "32768", "-analyzeduration", "100000",
+		// Demux as soon as bytes arrive — no probe/analyze cushion.
+		"-fflags", "+genpts+nobuffer+discardcorrupt",
+		"-flags", "low_delay",
+		"-err_detect", "ignore_err",
+		"-probesize", "16384", "-analyzeduration", "0", "-max_delay", "0",
 		"-f", "mpeg", "-i", "pipe:0",
+		"-fps_mode", "passthrough",
 		"-flush_packets", "1",
 		"-map", "0:v:0",
 		"-vf", "scale=-2:720:flags=fast_bilinear",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-		"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "3000k",
+		// VBV ≈ 1–2 frames at 1200k: large bufsize was buying smoothness with seconds of delay.
+		"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1500k",
 		"-g", "4", "-keyint_min", "4", "-sc_threshold", "0", "-bf", "0",
-		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0",
+		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0:bframes=0:b-adapt=0:mbtree=0:weightp=0:aq-mode=0:repeat-headers=1:aud=0:sps-id=0:keyint=4:min-keyint=4",
 		"-an", "-f", "h264", "pipe:1",
 	}
 	ff := exec.CommandContext(ctx, *ffmpegPath, args...)
@@ -352,6 +357,31 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 			log.Printf("streamer: first H264 after %s (run #%d)", time.Since(t0).Round(10*time.Millisecond), run)
 		}
 	}(s.restarts, s.startedAt)
+
+	// After EZVIZ's ~170s VTDU reconnect the HEVC bitstream discontinuities;
+	// ask for a fresh IDR so Safari can resync (brief freeze beats a gray flash).
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		var armed bool
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fresh := rtcFresh(2 * time.Second)
+				if !fresh {
+					if !armed {
+						armed = true
+						rtcRequestIDR()
+						log.Printf("streamer: H264 gap — waiting for keyframe after possible VTDU reconnect")
+					}
+					continue
+				}
+				armed = false
+			}
+		}
+	}()
 
 	done := make(chan error, 1)
 	go func() { done <- ff.Wait() }()
