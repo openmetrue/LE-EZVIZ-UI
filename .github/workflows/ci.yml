@@ -1,4 +1,4 @@
-name: ezvizd
+name: ci
 
 on:
   push:
