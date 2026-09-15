@@ -9,10 +9,8 @@ import (
 	client "le-ezviz-vs/client"
 	logging "le-ezviz-vs/logging"
 	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"go.uber.org/zap"
@@ -172,7 +170,7 @@ func main() {
 
 func runIdleWait(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) {
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGUSR1)
+	notifyIdleStop(sigs)
 	go func() {
 		for range sigs {
 			log.Info("idleWait: stop current stream")
@@ -359,17 +357,4 @@ func tokenAndVTM(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Re
 		return nil, tokErr
 	}
 	return dialed, nil
-}
-
-// unblockFifoWriter opens and closes the output FIFO so a blocked ffmpeg
-// reader is released when the stream never started.
-func unblockFifoWriter() {
-	if !*idleWait || *out == "" || *out == "-" {
-		return
-	}
-	fd, err := syscall.Open(*out, syscall.O_WRONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return
-	}
-	syscall.Close(fd)
 }
