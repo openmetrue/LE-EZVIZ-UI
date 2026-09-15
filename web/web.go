@@ -482,7 +482,9 @@ async function attachRTC() {
   // Host candidates only — server advertises a public ICE IP; STUN only adds gather delay.
   pc = new RTC({iceServers: []});
   pc.addEventListener("connectionstatechange", () => {
-    if (pc && (pc.connectionState === "failed" || pc.connectionState === "disconnected") && attached) detach();
+    // iOS often flickers through "disconnected" on brief UDP loss; tearing down
+    // the PC/video there causes a gray flash. Only hard-fail kills the session.
+    if (pc && pc.connectionState === "failed" && attached) detach();
   });
   pc.addEventListener("track", (ev) => {
     v.srcObject = ev.streams[0] || new MediaStream([ev.track]);

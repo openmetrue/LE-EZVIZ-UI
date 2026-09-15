@@ -316,8 +316,12 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					// Drop P-frames until the next encoder IDR so Safari can resync.
+					// Replaying a stale IDR then continuing with newer P-frames makes gray worse.
+					rtcMu.Lock()
+					rtcNeedIDR = true
+					rtcMu.Unlock()
 					if idr := ringLastIDR(); len(idr) > 0 {
-						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
 						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
 					}
 				}
