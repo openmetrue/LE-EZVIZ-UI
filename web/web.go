@@ -342,7 +342,7 @@ const t = `+string(jsT)+`;
 const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 const modeEl = document.getElementById("mode");
-let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, goneHits = 0;
+let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -362,7 +362,6 @@ function attach() {
   attached = true;
   hasPlayed = false;
   attachAt = Date.now();
-  goneHits = 0;
   v.src = base + "/hls/`+playlistName+`?t=" + Date.now();
   v.play().catch(()=>{});
 }
@@ -414,8 +413,6 @@ async function poll() {
       if (seenRestarts && attached) detach();
       seenRestarts = s.restarts;
     }
-    const ready = !!(s.running && s.manifest);
-    if (ready) { goneHits = 0; } else { goneHits++; }
     const dead = !s.running && !s.starting;
     if (attached && dead) detach();
     if (!attached && (s.starting || s.running)) attach();

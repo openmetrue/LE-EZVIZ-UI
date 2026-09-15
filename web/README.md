@@ -11,7 +11,7 @@ EZVIZ cloud (VTM/VTDU)
         │ MPEG-PS over TCP
         ▼
      le-ezviz-vs      (this repo root, fork of LE-EZVIZ-VS)
-        │ pipe (-out=-)
+        │ FIFO (-out stream.ps, -idleWait)
         ▼
      ffmpeg           copy HEVC → fMP4 HLS
         ▼
@@ -28,7 +28,7 @@ This daemon is MIT. The stream client at the repo root stays LGPL-2.1 (upstream 
 
 | Path | What |
 |------|------|
-| `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS). Extra flags: stdout pipe (`-out=-`), `EZVIZ_EMAIL` / `EZVIZ_PASSWORD`, `-statusOnly`, `-statusRaw`, `-maxStreamTime` (reconnect before the ~180s battery cutoff). |
+| `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS). Extra flags: `-out` (stdout `-` or a FIFO), `-idleWait`, `EZVIZ_EMAIL` / `EZVIZ_PASSWORD`, `-statusOnly`, `-statusRaw`, `-maxStreamTime` (reconnect before the ~180s battery cutoff). |
 | `web/` | Sources for the **`ezvizd`** daemon — site password, HLS, recordings (1 GB cap), battery history, logs, shareable token URL. |
 | `deploy/` | Example `systemd` unit and nginx snippet. |
 
@@ -55,11 +55,14 @@ export EZVIZ_EMAIL='you@example.com' EZVIZ_PASSWORD='secret'
 # omit -deviceSerial to list devices
 ```
 
-Pipe mode (what `ezvizd` uses):
+Idle-wait FIFO (what `ezvizd` uses): keep the EZVIZ session warm, start VTDU on a newline, stop it on `SIGUSR1`.
 
 ```sh
-./le-ezviz-vs -region Russia -deviceSerial YOURSERIAL -out=- -stdout=false -logFile=true -maxStreamTime 170
+mkfifo stream.ps
+./le-ezviz-vs -region Russia -deviceSerial YOURSERIAL -out stream.ps -idleWait -stdout=false -logFile=true -maxStreamTime 170
 ```
+
+Stdout pipe still works for a one-shot dump: `-out=-` (without `-idleWait`).
 
 ## Deploy
 
@@ -92,7 +95,7 @@ Anyone with that link can start the stream (no site password). Treat it like a p
 
 Applied on top of upstream files (not a wholesale replace):
 
-- `main.go` — `-out=-`, env credentials, `-statusOnly` / `-statusRaw`, `-maxStreamTime`, reconnect loop; warnings on stderr so they do not corrupt the pipe.
+- `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly` / `-statusRaw`, `-maxStreamTime`, reconnect loop; warnings on stderr so they do not corrupt the stream.
 - `logging/log.go` — InfoLevel instead of Debug.
 - `client/client.go` — `SetLogger`, `PipeMode`, `StreamOut`.
 - `client/vtdu.go` — write to stdout in pipe mode; `io.ReadFull`; reconnect on header desync; skip ffmpeg re-encode in pipe mode; keepalive via zap Debug.

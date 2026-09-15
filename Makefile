@@ -1,12 +1,12 @@
 .PHONY: build linux vet test clean
 
 build:
-	go build -o le-ezviz-vs .
-	cd web && go build -o ezvizd .
+	go build -trimpath -ldflags="-s -w" -o le-ezviz-vs .
+	cd web && go build -trimpath -ldflags="-s -w" -o ezvizd .
 
 linux:
-	GOOS=linux GOARCH=amd64 go build -o le-ezviz-vs-linux .
-	cd web && GOOS=linux GOARCH=amd64 go build -o ezvizd-linux .
+	GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o le-ezviz-vs-linux .
+	cd web && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ezvizd-linux .
 
 vet:
 	go vet ./...

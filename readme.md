@@ -8,6 +8,8 @@ EZVIZ HP2 and similar devices do not provide a local RTSP endpoint. Live video i
 
 Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand HLS, site authentication, a recording archive, and battery history.
 
+![Live player demo](demo.gif)
+
 Build and deployment: [`web/README.md`](web/README.md).
 
 ## Install
@@ -23,11 +25,11 @@ That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, enables `ezvizd.service`, and 
 Pin a version:
 
 ```sh
-curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v0.1.0/install.sh \
-  | sudo EZVIZ_VERSION=v0.1.0 bash
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v0.1.9/install.sh \
+  | sudo EZVIZ_VERSION=v0.1.9 bash
 ```
 
-Publishing a build: tag and push (`git tag v0.1.0 && git push origin v0.1.0`). CI attaches `ezvizd-linux-amd64` and `le-ezviz-vs-linux-amd64` to the release.
+Publishing a build: tag and push (`git tag v0.1.9 && git push origin v0.1.9`). CI attaches `ezvizd-linux-amd64` and `le-ezviz-vs-linux-amd64` to the release.
 
 The original LE-EZVIZ-VS README follows.
 
