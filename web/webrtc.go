@@ -103,39 +103,6 @@ func initWebRTC() error {
 	return nil
 }
 
-func offerH264Lines(sdp string) string {
-	pts := map[string]bool{}
-	var out []string
-	for _, line := range strings.Split(sdp, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		low := strings.ToLower(line)
-		if strings.HasPrefix(low, "a=rtpmap:") && strings.Contains(strings.ToUpper(line), "H264") {
-			out = append(out, line)
-			fields := strings.Fields(line)
-			if len(fields) >= 1 {
-				pt := strings.TrimPrefix(fields[0], "a=rtpmap:")
-				pt = strings.Split(pt, " ")[0]
-				pts[pt] = true
-			}
-		}
-	}
-	for _, line := range strings.Split(sdp, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if !strings.HasPrefix(strings.ToLower(line), "a=fmtp:") {
-			continue
-		}
-		rest := strings.TrimPrefix(line, "a=fmtp:")
-		pt := strings.Fields(rest)[0]
-		if pts[pt] {
-			out = append(out, line)
-		}
-	}
-	if len(out) > 4 {
-		out = out[:4]
-	}
-	return strings.Join(out, " | ")
-}
-
 func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -154,7 +121,7 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "offer has no H264", http.StatusBadRequest)
 		return
 	}
-	log.Printf("webrtc: offer %s", offerH264Lines(offer.SDP))
+	log.Printf("webrtc: offer ok")
 
 	// Arm keyframe gating BEFORE AddTrack so the new subscriber cannot
 	// receive mid-GOP P-frames (Safari then stays gray forever).
@@ -221,7 +188,7 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	// Keep needKey armed until the next encoder IDR after this join.
 	live.RequestKey()
 	loc := pc.LocalDescription()
-	log.Printf("webrtc: answer %s", offerH264Lines(loc.SDP))
+	log.Printf("webrtc: answer ok")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(loc)
 }

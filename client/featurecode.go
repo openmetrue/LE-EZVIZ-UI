@@ -10,24 +10,15 @@ import (
 	"go.uber.org/zap"
 )
 
-// LoadFeatureCode reads a stable 32-hex hardware id from disk (or creates one).
 func (LEZ *LE_EZVIZ_Client) LoadFeatureCode(path string) string {
 	if b, err := os.ReadFile(path); err == nil && len(b) == 32 {
 		return LEZ.applyFeatureCode(string(b))
 	}
 	code := hex.EncodeToString(GenerateFeatureCode())
 	if err := os.WriteFile(path, []byte(code), 0o644); err != nil {
-		log.Error("Error writing featurecode file, using in-memory", zap.Error(err))
+		log.Error("featurecode file", zap.Error(err))
 	}
 	return LEZ.applyFeatureCode(code)
-}
-
-func (LEZ *LE_EZVIZ_Client) SetFeatureCode(code string) {
-	if len(code) != 32 {
-		log.Info("featurecode must be 32 bytes")
-		code = hex.EncodeToString(GenerateFeatureCode())
-	}
-	LEZ.applyFeatureCode(code)
 }
 
 func (LEZ *LE_EZVIZ_Client) applyFeatureCode(code string) string {
@@ -42,8 +33,8 @@ func GetMd5(text string) string {
 }
 
 func GenerateFeatureCode() []byte {
-	randomBytes := make([]byte, 16)
-	_, _ = io.ReadFull(rand.Reader, randomBytes)
-	hash := md5.Sum(randomBytes)
-	return hash[:]
+	b := make([]byte, 16)
+	_, _ = io.ReadFull(rand.Reader, b)
+	h := md5.Sum(b)
+	return h[:]
 }

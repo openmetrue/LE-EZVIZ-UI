@@ -2,7 +2,7 @@
 
 Web UI for EZVIZ cameras, built on **[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS)**. This `web/` directory is a separate Go module so `go build ./...` at the repository root still builds only the original stream client. The daemon binary is still **`ezvizd`**.
 
-[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS/RTP feed. **`ezvizd`** turns that feed into low-latency WebRTC (H.264), with a site password, recordings, and a battery chart.
+[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS feed. **`ezvizd`** turns that feed into low-latency WebRTC (H.264), with a site password, recordings, and a battery chart.
 
 It is aimed at cameras with **no local RTSP** (HP2 and others). The camera sleeps until someone opens the page; the stream stops ~10s after the last viewer.
 
@@ -93,8 +93,8 @@ Applied on top of upstream files (not a wholesale replace):
 
 - `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly`, `-maxStreamTime`, reconnect loop; warnings on stderr so they do not corrupt the stream.
 - `logging/log.go` — InfoLevel instead of Debug.
-- `client/client.go` — `SetLogger`, `PipeMode`, `StreamOut`.
-- `client/vtdu.go` — write to stdout/FIFO in pipe mode; `io.ReadFull`; reconnect on header desync; keepalive via zap Debug.
+- `client/client.go` — `SetLogger`, `StreamOut`.
+- `client/vtdu.go` — write MPEG-PS to `StreamOut`; `io.ReadFull`; reconnect on header desync.
 - `client/pagelist.go` — `DeviceStatus`, `GetDeviceStatus` (original `GetPageList` unchanged).
 
 ## Lineage

@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -16,156 +15,126 @@ import (
 	"go.uber.org/zap"
 )
 
-var email = flag.String("email", "", "EZVIZ user e-mail")
-var password = flag.String("password", "", "EZVIZ user password")
-var region = flag.String("region", "Europe", "Manually set the region you are in: Europe, Africa, India, Oceania, NorthAmercia, Russia, SouthAmerica")
-var terminalName = flag.String("terminalName", "LE-EZ", "Optional: Set the name of what your device is called when viewing registered devices (terminals)")
-var preservefc = flag.Bool("preserveFeatureCode", true, "Preserve the featurecode, it is essentially a random ID to identify the terminal")
-var deviceSerial = flag.String("deviceSerial", "", "The device serial you want to connect to")
-var out = flag.String("out", "stream", "Where to write the raw stream: file path or - for stdout (pipe mode, logs go to lez.log)")
-var statusOnly = flag.Bool("statusOnly", false, "Print device status as JSON to stdout and exit (no stream, camera stays asleep)")
-var maxStreamTime = flag.Int("maxStreamTime", 0, "If >0, proactively reconnect the VTDU stream every N seconds (keeps battery cameras awake past their KeepAlive limit)")
-var idleWait = flag.Bool("idleWait", false, "Stay logged in; wait for a newline on stdin before each stream, SIGUSR1 ends the current stream")
-var stdout = flag.Bool("stdout", true, "Print log to the terminal")
-var logFile = flag.Bool("logFile", true, "Print log to lez.log")
-var logLevel = flag.String("logLevel", "info", "Log level: debug, info, warn, error")
-var log *zap.Logger
+var (
+	email         = flag.String("email", "", "EZVIZ email (or EZVIZ_EMAIL)")
+	password      = flag.String("password", "", "EZVIZ password (or EZVIZ_PASSWORD)")
+	region        = flag.String("region", "Europe", "Europe|Africa|India|Oceania|NorthAmerica|Russia|SouthAmerica")
+	deviceSerial  = flag.String("deviceSerial", "", "camera serial")
+	out           = flag.String("out", "stream", "raw stream path, FIFO, or - for stdout")
+	statusOnly    = flag.Bool("statusOnly", false, "print device status JSON and exit (no stream)")
+	maxStreamTime = flag.Int("maxStreamTime", 0, "reconnect VTDU every N seconds (battery cams)")
+	idleWait      = flag.Bool("idleWait", false, "stay logged in; newline starts stream, SIGUSR1 stops it")
+	logLevel      = flag.String("logLevel", "info", "debug|info|warn|error")
+	log           *zap.Logger
+)
 
 func main() {
 	flag.Parse()
-	// Credentials may come from env to avoid showing them in the process list.
 	if *email == "" {
 		*email = os.Getenv("EZVIZ_EMAIL")
 	}
 	if *password == "" {
 		*password = os.Getenv("EZVIZ_PASSWORD")
 	}
-	if *email == "" {
-		panic("email empty")
+	if *email == "" || *password == "" {
+		panic("email/password required")
 	}
-	if *password == "" {
-		panic("password empty")
-	}
-	if *out == "-" || *statusOnly || *idleWait {
-		*stdout = false
-		*logFile = true
-	}
-	logging.CreateLogger(*logFile, *stdout, *logLevel)
+	toStdout := *out == "-" || *statusOnly || *idleWait
+	logging.CreateLogger(true, !toStdout, *logLevel)
 	client.SetLogger(logging.Log)
-	client.TerminalName = *terminalName
 	log = logging.Log
 	if _, ok := client.Regions[*region]; !ok {
-		log.Error("Invalid region", zap.String("Valid Values", "Europe|Africa|India|Oceania|NorthAmerica|Russia|SouthAmerica"))
+		log.Error("Invalid region")
 	}
-	LEZ, err := client.NewLE_EZVIZ_Client(*email, *password, *region, "00000000000000000000000000000000", *terminalName, "shipin7", 15)
+
+	lez, err := client.NewLE_EZVIZ_Client(*email, *password, *region, "00000000000000000000000000000000", "LE-EZ", "shipin7", 15)
 	if err != nil {
 		panic(err)
 	}
-	if *out == "-" {
-		LEZ.PipeMode = true
-		LEZ.StreamOut = os.Stdout
-	} else if *out != "" {
-		LEZ.StreamFile = *out
-	}
-	if *preservefc {
-		LEZ.LoadFeatureCode("featurecode")
-	} else {
-		LEZ.SetFeatureCode(hex.EncodeToString(client.GenerateFeatureCode()))
-	}
-	if _, err = LEZ.V3_Login(); err != nil {
+	lez.LoadFeatureCode("featurecode")
+	if _, err = lez.V3_Login(); err != nil {
 		panic(err)
 	}
 	if *statusOnly {
-		ds, err := LEZ.GetDeviceStatus(*deviceSerial)
+		ds, err := lez.GetDeviceStatus(*deviceSerial)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "status query failed:", err)
+			fmt.Fprintln(os.Stderr, "status:", err)
 			os.Exit(1)
 		}
-		json.NewEncoder(os.Stdout).Encode(ds)
+		_ = json.NewEncoder(os.Stdout).Encode(ds)
 		return
 	}
-	if _, err = LEZ.GetServerInfo(); err != nil {
+	if _, err = lez.GetServerInfo(); err != nil {
 		panic(err)
 	}
-
-	PageList, err := LEZ.GetPageList()
+	pageList, err := lez.GetPageList()
 	if err != nil {
 		panic(err)
 	}
-	if *deviceSerial == "" {
-		if _, err = LEZ.GetVTDUv2Token(); err != nil {
-			panic(err)
-		}
-	}
-	for _, v := range *PageList.DeviceInfos {
+	for _, v := range *pageList.DeviceInfos {
 		log.Info(v.Name, zap.String("Serial", v.DeviceSerial))
 	}
-	fmt.Fprintln(os.Stderr, "!!!WARNING: This library is in beta, only use for development/testing until it is stable, things will change as development continues!!!")
-	fmt.Fprintln(os.Stderr, "!!!Encryption is not yet available including E2EE with stream servers, your streams will be unencrypted until encryption is implemented!!!")
-	if *deviceSerial != "" {
-		var RI client.Resource
-		var DI client.DeviceInfos
-		for _, v := range *PageList.ResourceInfos {
-			if *deviceSerial == v.DeviceSerial {
-				RI = v
-			}
-		}
-		for _, v := range *PageList.DeviceInfos {
-			if *deviceSerial == v.DeviceSerial {
-				DI = v
-			}
-		}
-		if DI.ChannelNumber == 0 {
-			DI.ChannelNumber = 1
-		}
-		if v, ok := PageList.VTM[RI.ResourceID]; ok {
-			run := func() error {
-				return startDeviceStream(LEZ, v, RI, DI, nil)
-			}
-			if *idleWait {
-				runIdleWait(LEZ, v, RI, DI)
-				return
-			}
-			if !LEZ.PipeMode {
-				if err := run(); err != nil {
-					log.Error("stream failed", zap.Error(err))
-				}
-				return
-			}
-			backoff := time.Duration(0)
-			for {
-				if backoff > 0 {
-					time.Sleep(backoff)
-				}
-				iterStart := time.Now()
-				err := run()
-				if err != nil {
-					log.Error("VTDU stream ended with error", zap.Error(err))
-				} else {
-					log.Info("VTDU stream ended, reconnecting")
-				}
-				if time.Since(iterStart) < 30*time.Second {
-					backoff = 15 * time.Second
-				} else {
-					backoff = 2 * time.Second
-				}
-			}
-		}
+	if *deviceSerial == "" {
+		return
 	}
 
+	var ri client.Resource
+	var di client.DeviceInfos
+	for _, v := range *pageList.ResourceInfos {
+		if v.DeviceSerial == *deviceSerial {
+			ri = v
+		}
+	}
+	for _, v := range *pageList.DeviceInfos {
+		if v.DeviceSerial == *deviceSerial {
+			di = v
+		}
+	}
+	if di.ChannelNumber == 0 {
+		di.ChannelNumber = 1
+	}
+	vtm, ok := pageList.VTM[ri.ResourceID]
+	if !ok {
+		panic("device VTM not found")
+	}
+
+	if *idleWait {
+		runIdleWait(lez, vtm, ri, di)
+		return
+	}
+
+	if err := openStreamOut(lez); err != nil {
+		panic(err)
+	}
+	if err := startDeviceStream(lez, vtm, ri, di, nil); err != nil {
+		log.Error("stream failed", zap.Error(err))
+	}
 }
 
-func runIdleWait(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) {
+func openStreamOut(lez *client.LE_EZVIZ_Client) error {
+	if *out == "-" {
+		lez.StreamOut = os.Stdout
+		return nil
+	}
+	f, err := os.OpenFile(*out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	lez.StreamOut = f
+	return nil
+}
+
+func runIdleWait(lez *client.LE_EZVIZ_Client, v client.VTMResource, ri client.Resource, di client.DeviceInfos) {
 	sigs := make(chan os.Signal, 1)
 	notifyIdleStop(sigs)
 	go func() {
 		for range sigs {
 			log.Info("idleWait: stop current stream")
-			LEZ.InterruptStream()
+			lez.InterruptStream()
 		}
 	}()
 	warm := &warmVTM{}
-	warm.prefetch(LEZ, v, RI, DI)
+	warm.prefetch(lez, v, ri, di)
 	log.Info("EZVIZ session ready, waiting for stream kick")
 	in := bufio.NewReader(os.Stdin)
 	for {
@@ -173,13 +142,13 @@ func runIdleWait(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Re
 			return
 		}
 		log.Info("idleWait: starting stream")
-		LEZ.BeginStream()
-		if err := startDeviceStream(LEZ, v, RI, DI, warm); err != nil {
+		lez.BeginStream()
+		if err := startDeviceStream(lez, v, ri, di, warm); err != nil {
 			log.Error("stream session ended", zap.Error(err))
 		} else {
 			log.Info("stream session ended")
 		}
-		warm.prefetch(LEZ, v, RI, DI)
+		warm.prefetch(lez, v, ri, di)
 	}
 }
 
@@ -198,17 +167,17 @@ func (w *warmVTM) take() *client.VTMStream {
 	return vs
 }
 
-func (w *warmVTM) prefetch(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos) {
+func (w *warmVTM) prefetch(lez *client.LE_EZVIZ_Client, v client.VTMResource, ri client.Resource, di client.DeviceInfos) {
 	w.mu.Lock()
 	w.gen++
 	gen := w.gen
 	w.mu.Unlock()
 	go func() {
-		if _, err := LEZ.GetVTDUv2Token(); err != nil {
+		if _, err := lez.GetVTDUv2Token(); err != nil {
 			log.Error("idleWait: prefetch token", zap.Error(err))
 			return
 		}
-		vs, err := LEZ.DialVTM(v.ExternalIP, v.Port)
+		vs, err := lez.DialVTM(v.ExternalIP, v.Port)
 		if err != nil {
 			log.Error("idleWait: prefetch VTM", zap.Error(err))
 			return
@@ -217,7 +186,7 @@ func (w *warmVTM) prefetch(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		if w.gen != gen {
-			vs.Conn.Close()
+			_ = vs.Conn.Close()
 			return
 		}
 		if w.vs != nil && w.vs.Conn != nil {
@@ -228,20 +197,20 @@ func (w *warmVTM) prefetch(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI
 	}()
 }
 
-func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos, warm *warmVTM) error {
-	defer LEZ.DropConns()
+func startDeviceStream(lez *client.LE_EZVIZ_Client, v client.VTMResource, ri client.Resource, di client.DeviceInfos, warm *warmVTM) error {
+	defer lez.DropConns()
 	var fifo *os.File
 	if *idleWait && *out != "" && *out != "-" {
 		defer func() {
 			if fifo != nil {
-				fifo.Close()
-				LEZ.StreamOut = nil
+				_ = fifo.Close()
+				lez.StreamOut = nil
 			}
 		}()
 	}
 	for {
 		t0 := time.Now()
-		LEZ.DropConns()
+		lez.DropConns()
 		usedWarm := warm != nil
 		fail := func(err error) error {
 			if fifo == nil {
@@ -249,15 +218,15 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 			}
 			return err
 		}
-		VS, err := tokenAndVTM(LEZ, v, RI, DI, warm)
+		vs, err := tokenAndVTM(lez, v, warm)
 		if err != nil {
 			return fail(err)
 		}
-		Tokens := *LEZ.VTDUTokens.Tokens
-		URL := LEZ.BuildVtmUrl(VS.VTMIP, VS.VTMPort, RI.DeviceSerial, RI.StreamBizUrl, Tokens[0], DI.ChannelNumber, LEZ.ClientType)
-		RStreamInfoRsp, err := LEZ.StartVTMStream(VS, URL)
+		tokens := *lez.VTDUTokens.Tokens
+		url := lez.BuildVtmUrl(vs.VTMIP, vs.VTMPort, ri.DeviceSerial, ri.StreamBizUrl, tokens[0], di.ChannelNumber, lez.ClientType)
+		rsp, err := lez.StartVTMStream(vs, url)
 		if err != nil {
-			VS.Conn.Close()
+			_ = vs.Conn.Close()
 			if usedWarm {
 				log.Warn("idleWait: warm VTM dead, redialing", zap.Error(err))
 				warm = nil
@@ -265,48 +234,43 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 			}
 			return fail(err)
 		}
-		vtmAt := time.Since(t0)
-		IP, Port, _, _, err := LEZ.ParseVtmUrl(*RStreamInfoRsp.Streamurl)
+		ip, port, _, _, err := lez.ParseVtmUrl(*rsp.Streamurl)
 		if err != nil {
-			VS.Conn.Close()
+			_ = vs.Conn.Close()
 			return fail(err)
 		}
-		VTDUStream, err := LEZ.ConnectVTDU(IP, Port, *RStreamInfoRsp.Vtmstreamkey, v.PublicKey.Key)
+		vtdu, err := lez.ConnectVTDU(ip, port, *rsp.Vtmstreamkey, v.PublicKey.Key)
 		if err != nil {
-			VS.Conn.Close()
+			_ = vs.Conn.Close()
 			return fail(err)
 		}
 		if fifo == nil && *idleWait && *out != "" && *out != "-" {
 			f, err := os.OpenFile(*out, os.O_WRONLY, 0)
 			if err != nil {
-				VTDUStream.Conn.Close()
-				VS.Conn.Close()
+				_ = vtdu.Conn.Close()
+				_ = vs.Conn.Close()
 				return err
 			}
 			fifo = f
-			LEZ.PipeMode = true
-			LEZ.StreamOut = f
+			lez.StreamOut = f
 		}
-		log.Info("stream handshake",
-			zap.Duration("vtm", vtmAt),
-			zap.Duration("vtdu", time.Since(t0)-vtmAt),
-			zap.Duration("total", time.Since(t0)))
+		log.Info("stream handshake", zap.Duration("total", time.Since(t0)))
 		var proactive atomic.Bool
 		var timer *time.Timer
 		if *maxStreamTime > 0 {
 			timer = time.AfterFunc(time.Duration(*maxStreamTime)*time.Second, func() {
 				proactive.Store(true)
 				log.Info("maxStreamTime reached, proactive VTDU reconnect")
-				VTDUStream.Conn.Close()
+				_ = vtdu.Conn.Close()
 			})
 		}
-		err = LEZ.StartVTDUStream(VTDUStream, URL)
+		err = lez.StartVTDUStream(vtdu, url)
 		if timer != nil {
 			timer.Stop()
 		}
-		VTDUStream.Conn.Close()
-		VS.Conn.Close()
-		if *idleWait && proactive.Load() && !LEZ.StreamInterrupted() {
+		_ = vtdu.Conn.Close()
+		_ = vs.Conn.Close()
+		if *idleWait && proactive.Load() && !lez.StreamInterrupted() {
 			log.Info("idleWait: reconnecting VTDU")
 			warm = nil
 			continue
@@ -315,32 +279,32 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 	}
 }
 
-func tokenAndVTM(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI client.Resource, DI client.DeviceInfos, warm *warmVTM) (*client.VTMStream, error) {
+func tokenAndVTM(lez *client.LE_EZVIZ_Client, v client.VTMResource, warm *warmVTM) (*client.VTMStream, error) {
 	var vs *client.VTMStream
 	if warm != nil {
 		vs = warm.take()
 	}
-	haveTok := LEZ.VTDUTokens != nil && LEZ.VTDUTokens.Tokens != nil && len(*LEZ.VTDUTokens.Tokens) > 0
+	haveTok := lez.VTDUTokens != nil && lez.VTDUTokens.Tokens != nil && len(*lez.VTDUTokens.Tokens) > 0
 	if vs != nil {
-		LEZ.TrackConn(vs.Conn)
+		lez.TrackConn(vs.Conn)
 		if haveTok {
 			return vs, nil
 		}
-		if _, err := LEZ.GetVTDUv2Token(); err != nil {
-			vs.Conn.Close()
+		if _, err := lez.GetVTDUv2Token(); err != nil {
+			_ = vs.Conn.Close()
 			return nil, err
 		}
 		return vs, nil
 	}
 	tokCh := make(chan error, 1)
-	go func() { _, err := LEZ.GetVTDUv2Token(); tokCh <- err }()
-	dialed, err := LEZ.ConnectVTM(v.ExternalIP, v.Port, RI, DI, "", v.PublicKey.Key)
+	go func() { _, err := lez.GetVTDUv2Token(); tokCh <- err }()
+	dialed, err := lez.ConnectVTM(v.ExternalIP, v.Port, v.PublicKey.Key)
 	tokErr := <-tokCh
 	if err != nil {
 		return nil, err
 	}
 	if tokErr != nil {
-		dialed.Conn.Close()
+		_ = dialed.Conn.Close()
 		return nil, tokErr
 	}
 	return dialed, nil
