@@ -7,14 +7,13 @@ import (
 	"log"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-var idleTimeout = 30 * time.Second
+var idleTimeout = 10 * time.Second
 
 const restartBackoff = 15 * time.Second
 
@@ -226,15 +225,12 @@ func (s *Streamer) supervise() {
 			s.cancel()
 		case desired && s.running && s.cancel != nil:
 			age := time.Since(s.startedAt)
-			if age >= 20*time.Second && !hlsPlayable() {
-				log.Printf("streamer: watchdog — no playable HLS after 20s, restarting pipeline")
+			if age >= 20*time.Second && !rtcPlayable() {
+				log.Printf("streamer: watchdog — no H264 after 20s, restarting pipeline")
 				s.cancel()
-			} else if age >= 60*time.Second {
-				if st, err := os.Stat(playlistPath()); err == nil &&
-					time.Since(st.ModTime()) > 12*time.Second {
-					log.Printf("streamer: watchdog — segments stale for 12s, restarting pipeline")
-					s.cancel()
-				}
+			} else if age >= 60*time.Second && !rtcFresh(12*time.Second) {
+				log.Printf("streamer: watchdog — H264 stale for 12s, restarting pipeline")
+				s.cancel()
 			}
 		}
 		s.mu.Unlock()
@@ -261,37 +257,43 @@ func (s *Streamer) runWithBackoff(ctx context.Context, email, password, serial, 
 }
 
 func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region string) error {
-	dir := hlsDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	if err := s.ensureHold(email, password, serial, region); err != nil {
 		return fmt.Errorf("session: %w", err)
 	}
-	clearHLS()
-	defer clearHLS()
+	ringClear()
+	defer rtcDropTrack()
 
-	ff := exec.CommandContext(ctx, *ffmpegPath,
+	args := []string{
 		"-hide_banner", "-loglevel", "warning",
+		"-threads", "1", "-filter_threads", "1",
 		"-fflags", "+genpts+nobuffer", "-flags", "low_delay",
 		"-probesize", "32768", "-analyzeduration", "200000",
 		"-f", "mpeg", "-i", fifoPath(),
 		"-flush_packets", "1",
-		"-map", "0:v:0", "-c:v", "copy", "-an", "-tag:v", "hvc1",
-		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
-		"-f", "hls", "-hls_time", "1", "-hls_init_time", "0.5", "-hls_list_size", "180",
-		"-hls_segment_type", "fmp4",
-		"-hls_fmp4_init_filename", "init.mp4",
-		"-hls_flags", "delete_segments+temp_file+split_by_time",
-		filepath.Join(dir, playlistName))
+		"-map", "0:v:0",
+		// fast_bilinear: cheaper 1080→720 than default bicubic; fine for a 15fps cam.
+		"-vf", "scale=-2:720:flags=fast_bilinear",
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+		"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+		"-b:v", "1600k", "-maxrate", "2000k", "-bufsize", "4000k",
+		"-g", "15", "-keyint_min", "15", "-sc_threshold", "0", "-bf", "0",
+		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0",
+		"-an", "-f", "h264", "pipe:1",
+	}
+	ff := exec.CommandContext(ctx, *ffmpegPath, args...)
 	ff.Dir = *workDir
 	if f, err := os.OpenFile(ffmpegLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		defer f.Close()
 		ff.Stderr = f
 	}
+	h264, err := ff.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("h264 pipe: %w", err)
+	}
 	if err := ff.Start(); err != nil {
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
+	go pumpH264(h264)
 	s.mu.Lock()
 	hold := s.hold
 	holdIn := s.holdIn
@@ -311,7 +313,7 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	log.Printf("streamer: started (run #%d)", s.restarts)
 	go func(run int, t0 time.Time) {
 		if waitForPlayable(20 * time.Second) {
-			log.Printf("streamer: first HLS after %s (run #%d)", time.Since(t0).Round(10*time.Millisecond), run)
+			log.Printf("streamer: first H264 after %s (run #%d)", time.Since(t0).Round(10*time.Millisecond), run)
 		}
 	}(s.restarts, s.startedAt)
 
@@ -341,51 +343,6 @@ func signalHold(hold *exec.Cmd) {
 	}
 }
 
-func playlistSegments(data []byte) []string {
-	var segs []string
-	for _, ln := range strings.Split(string(data), "\n") {
-		ln = strings.TrimSpace(ln)
-		if ln == "" || strings.HasPrefix(ln, "#") {
-			continue
-		}
-		if i := strings.IndexByte(ln, '?'); i >= 0 {
-			ln = ln[:i]
-		}
-		name := filepath.Base(ln)
-		if strings.HasSuffix(name, ".m4s") {
-			segs = append(segs, name)
-		}
-	}
-	return segs
-}
-
-const hlsMinFile = 100
-
-func hlsFileReady(path string) bool {
-	inf, err := os.Stat(path)
-	return err == nil && inf.Size() >= hlsMinFile
-}
-
-func hlsPlayable() bool {
-	st, err := os.Stat(playlistPath())
-	if err != nil || time.Since(st.ModTime()) > 15*time.Second {
-		return false
-	}
-	if !hlsFileReady(hlsFile("init.mp4")) {
-		return false
-	}
-	data, err := os.ReadFile(playlistPath())
-	if err != nil {
-		return false
-	}
-	for _, name := range playlistSegments(data) {
-		if hlsFileReady(hlsFile(name)) {
-			return true
-		}
-	}
-	return false
-}
-
 func waitWhileActive(d time.Duration, ready func() bool) bool {
 	deadline := time.Now().Add(d)
 	for {
@@ -400,22 +357,5 @@ func waitWhileActive(d time.Duration, ready func() bool) bool {
 }
 
 func waitForPlayable(d time.Duration) bool {
-	return waitWhileActive(d, hlsPlayable)
-}
-
-func waitForFile(path string, d time.Duration) bool {
-	return waitWhileActive(d, func() bool {
-		return hlsFileReady(path)
-	})
-}
-
-func clearHLS() {
-	dir := hlsDir()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		os.Remove(filepath.Join(dir, e.Name()))
-	}
+	return waitWhileActive(d, rtcPlayable)
 }

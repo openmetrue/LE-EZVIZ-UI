@@ -6,10 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
@@ -38,6 +35,12 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
   .err { color:#f87171; font-size:13px; margin-top:10px; }
   .ok { color:#34d399; font-size:13px; margin-top:10px; }
   .muted { color:#9aa4b2; font-size:13px; }
+  .statusline { color:#9aa4b2; font-size:13px; font-weight:400; text-align:center; margin:10px 0 0; min-height:1.2em; }
+  .toolbar { display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:8px; margin:10px 0 0; min-height:28px; }
+  .toolbar .statusline { grid-column:2; margin:0; }
+  .toolbar .actions { grid-column:3; justify-self:end; display:flex; gap:4px; }
+  button.textbtn { -webkit-appearance:none; appearance:none; display:inline; margin:0; padding:0 6px; background:transparent; border:0; border-radius:0; color:#9aa4b2; font-family:inherit; font-size:13px; font-weight:400; line-height:1.2; cursor:pointer; white-space:nowrap; }
+  button.textbtn:hover { color:#e8eaed; }
   .player { position:relative; width:100%; aspect-ratio:16/9; border-radius:10px; background:#000; overflow:hidden; margin-top:8px; }
   .player video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }
   .player video::-webkit-media-controls-volume-slider { display:none; }
@@ -307,9 +310,9 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	streamer.Touch()
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
-	shareURL := publicOrigin(r) + *basePath + "/hls/" + playlistName + "?token=" + cfgCopy().DeviceToken
+	shareURL := publicOrigin(r) + *basePath + "/share?token=" + cfgCopy().DeviceToken
 	jsT, _ := json.Marshal(map[string]string{
-		"noHls":         T(lang, "live.noHls"),
+		"noRtc":         T(lang, "live.noRtc"),
 		"relogin":       T(lang, "live.relogin"),
 		"notConfigured": T(lang, "live.notConfigured"),
 		"lastError":     T(lang, "live.lastError"),
@@ -323,109 +326,26 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 		"online":        T(lang, "live.online"),
 		"offline":       T(lang, "live.offline"),
 		"upgrade":       T(lang, "live.upgrade"),
-		"waking":        T(lang, "live.waking"),
 		"alwaysOn":      T(lang, "live.alwaysOn"),
 	})
 	render(w, r, T(lang, "live.title"), tabs(r, "live")+`
 <div class="player">
   <video id="v" controls autoplay muted playsinline></video>
 </div>
-<p class="muted"><span id="bat"></span><span id="st"></span></p>
-<p class="muted" id="mode"></p>
-<div class="row">
-  <button id="save" type="button">`+esc(T(lang, "live.save"))+`</button>
-  <button id="share" type="button" class="btn gray" style="margin-top:16px">`+esc(T(lang, "live.share"))+`</button>
+<div class="toolbar">
+  <p class="statusline"><span id="bat"></span><span id="st"></span></p>
+  <div class="actions">
+    <button id="save" type="button" class="textbtn">`+esc(T(lang, "live.save"))+`</button>
+    <button id="share" type="button" class="textbtn">`+esc(T(lang, "live.share"))+`</button>
+  </div>
 </div>
+<p class="statusline" id="mode"></p>
 <script>
-const base = "`+*basePath+`";
+`+webrtcPlayerJS("", true)+`
 const shareURL = "`+template.JSEscapeString(shareURL)+`";
 const t = `+string(jsT)+`;
-const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 const modeEl = document.getElementById("mode");
-let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0;
-
-function vid() { return document.getElementById("v"); }
-function bindVideo(el) {
-  el.muted = true;
-  el.addEventListener("playing", () => { hasPlayed = true; if (st.textContent === t.waking) st.textContent = ""; });
-  el.addEventListener("error", () => { if (attached) detach(); });
-}
-bindVideo(vid());
-
-function attach() {
-  if (attached || Date.now() < cooldownUntil) return;
-  const v = vid();
-  if (!v.canPlayType("application/vnd.apple.mpegurl")) {
-    st.textContent = t.noHls;
-    return;
-  }
-  attached = true;
-  hasPlayed = false;
-  attachAt = Date.now();
-  v.src = base + "/hls/`+playlistName+`?t=" + Date.now();
-  v.play().catch(()=>{});
-}
-
-function detach() {
-  attached = false;
-  hasPlayed = false;
-  attachAt = 0;
-  cooldownUntil = Date.now() + 1500;
-  const old = vid();
-  old.removeAttribute("src");
-  const neu = old.cloneNode(false);
-  neu.removeAttribute("src");
-  old.replaceWith(neu);
-  bindVideo(neu);
-}
-
-setInterval(() => {
-  const v = vid();
-  if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 45000) detach();
-  if (!attached || v.paused || !hasPlayed) { lastT = -1; stuckSince = 0; return; }
-  if (v.currentTime === lastT) {
-    if (!stuckSince) stuckSince = Date.now();
-    if (Date.now() - stuckSince > 15000) { stuckSince = 0; detach(); }
-  } else stuckSince = 0;
-  lastT = v.currentTime;
-}, 4000);
-
-async function poll() {
-  if (document.visibilityState !== "visible") {
-    const v = vid();
-    if (attached && !v.paused) v.pause();
-  } else try {
-    const r = await fetch(base + "/start", {method: "POST"});
-    if (document.visibilityState !== "visible") { setTimeout(poll, 1000); return; }
-    if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, hasPlayed ? 1000 : 300); return; }
-    if (attached && hasPlayed && vid().paused) vid().play().catch(()=>{});
-    const s = await (await fetch(base + "/api/status")).json();
-    if (s.device && s.device.battery) {
-      const d = s.device;
-      let line = t.battery + ": " + d.battery + "%";
-      if (d.wifi_signal) line += " · Wi-Fi: " + d.wifi_signal + "%";
-      line += d.online ? " · " + t.online : " · " + t.offline;
-      if (d.upgrade_available === 1) line += " · " + t.upgrade;
-      bat.textContent = line;
-    }
-    if (modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
-    if (s.restarts && s.restarts !== seenRestarts) {
-      if (seenRestarts && attached) detach();
-      seenRestarts = s.restarts;
-    }
-    const dead = !s.running && !s.starting;
-    if (attached && dead) detach();
-    if (!attached && (s.starting || s.running)) attach();
-    if (!s.configured) st.textContent = t.notConfigured;
-    else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
-    else if (!hasPlayed && (s.starting || s.running)) st.textContent = t.waking;
-    else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
-  } catch (e) {}
-  const wait = (document.visibilityState === "visible" && !hasPlayed) ? 300 : 1000;
-  setTimeout(poll, wait);
-}
-poll();
 
 document.getElementById("save").onclick = async () => {
   st.textContent = t.saving;
@@ -454,106 +374,232 @@ document.getElementById("share").onclick = async () => {
 </script>`)
 }
 
+func handleShare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	token := ""
+	if validToken(r) {
+		token = r.URL.Query().Get("token")
+		streamer.Touch()
+	}
+	lang := langOf(r)
+	jsT, _ := json.Marshal(map[string]string{
+		"noRtc":         T(lang, "live.noRtc"),
+		"relogin":       T(lang, "live.relogin"),
+		"lastError":     T(lang, "live.lastError"),
+		"notConfigured": T(lang, "live.notConfigured"),
+		"battery":       T(lang, "live.battery"),
+		"online":        T(lang, "live.online"),
+		"offline":       T(lang, "live.offline"),
+		"upgrade":       T(lang, "live.upgrade"),
+		"alwaysOn":      T(lang, "live.alwaysOn"),
+	})
+	body := `<div class="player">
+  <video id="v" controls autoplay muted playsinline></video>
+</div>
+<p class="statusline"><span id="bat"></span><span id="st"></span></p>
+<script>
+` + webrtcPlayerJS(token, true) + `
+const t = ` + string(jsT) + `;
+const bat = document.getElementById("bat");
+</script>`
+	if validSession(r) {
+		render(w, r, T(lang, "live.title"), tabs(r, "live")+body)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprintf(w, `<!doctype html>
+<html lang="%s"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LE-EZVIZ-UI — Live</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: -apple-system, system-ui, sans-serif; background:#0c0f14; color:#e8eaed; margin:0; padding:12px; }
+  .player { background:#000; border-radius:8px; overflow:hidden; aspect-ratio:16/9; }
+  video { width:100%%; height:100%%; display:block; background:#000; object-fit:contain; }
+  .statusline { color:#9aa4b2; font-size:13px; text-align:center; margin:10px 0 0; }
+  #bat:not(:empty) { margin-right: 8px; }
+</style></head><body>
+%s
+</body></html>`, lang, body)
+}
+
+// webrtcPlayerJS is the shared Live/Share WebRTC client. tokenQ is appended to API URLs.
+// withChrome enables battery/mode status fields used on the authenticated Live page.
+func webrtcPlayerJS(token string, withChrome bool) string {
+	tokJS := template.JSEscapeString(token)
+	chromePoll := ""
+	if withChrome {
+		chromePoll = `
+    if (typeof bat !== "undefined" && s.device && s.device.battery) {
+      const d = s.device;
+      let line = t.battery + ": " + d.battery + "%";
+      if (d.wifi_signal) line += " · Wi-Fi: " + d.wifi_signal + "%";
+      line += d.online ? " · " + t.online : " · " + t.offline;
+      if (d.upgrade_available === 1) line += " · " + t.upgrade;
+      bat.textContent = line;
+    }
+    if (typeof modeEl !== "undefined" && modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
+`
+	}
+	return `const base = "` + *basePath + `";
+const token = "` + tokJS + `";
+const tokQ = token ? ("?token=" + encodeURIComponent(token)) : "";
+const st = document.getElementById("st");
+let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, pc = null, rtcOK = false;
+
+function vid() { return document.getElementById("v"); }
+function bindVideo(el) {
+  el.muted = true;
+  el.playbackRate = 1;
+  el.addEventListener("playing", () => { hasPlayed = true; });
+  el.addEventListener("error", () => { if (attached) detach(); });
+}
+bindVideo(vid());
+
+function waitIce(conn) {
+  return new Promise((res) => {
+    const tmr = setTimeout(() => res(), 2500);
+    if (conn.iceGatheringState === "complete") { clearTimeout(tmr); res(); return; }
+    conn.addEventListener("icegatheringstatechange", () => {
+      if (conn.iceGatheringState === "complete") { clearTimeout(tmr); res(); }
+    });
+  });
+}
+
+async function attachRTC() {
+  const v = vid();
+  const RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
+  pc = new RTC({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc && (pc.connectionState === "failed" || pc.connectionState === "disconnected") && attached) detach();
+  });
+  pc.addEventListener("track", (ev) => {
+    v.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+    v.muted = true;
+    v.setAttribute("playsinline", "");
+    v.setAttribute("webkit-playsinline", "");
+    v.play().catch(()=>{});
+  });
+  const tr = pc.addTransceiver("video", {direction: "recvonly"});
+  try {
+    const caps = RTCRtpReceiver.getCapabilities && RTCRtpReceiver.getCapabilities("video");
+    if (caps && tr.setCodecPreferences) {
+      const pref = caps.codecs.filter((c) => /H264/i.test(c.mimeType));
+      if (pref.length) tr.setCodecPreferences(pref);
+    }
+  } catch (_) {}
+  const offer = await pc.createOffer();
+  if (!/H264/i.test(offer.sdp || "")) throw new Error("no h264 in offer");
+  await pc.setLocalDescription(offer);
+  await waitIce(pc);
+  const r = await fetch(base + "/webrtc" + tokQ, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(pc.localDescription)});
+  if (!r.ok) throw new Error("webrtc " + r.status);
+  await pc.setRemoteDescription(await r.json());
+}
+
+function waitPlaying(ms) {
+  const v = vid();
+  if (v.videoWidth > 0) return Promise.resolve(true);
+  return new Promise((res) => {
+    const tmr = setTimeout(() => res(v.videoWidth > 0), ms);
+    const done = () => { if (v.videoWidth > 0) { clearTimeout(tmr); res(true); } };
+    v.addEventListener("playing", done);
+    v.addEventListener("loadeddata", done);
+    v.addEventListener("resize", done);
+  });
+}
+
+function rtcSupported() {
+  return !!(window.RTCPeerConnection || window.webkitRTCPeerConnection);
+}
+
+async function attach() {
+  if (attached || Date.now() < cooldownUntil) return;
+  if (!rtcSupported()) {
+    if (st) st.textContent = t.noRtc;
+    return;
+  }
+  if (!rtcOK) return;
+  attached = true;
+  hasPlayed = false;
+  attachAt = Date.now();
+  try {
+    await attachRTC();
+    if (await waitPlaying(15000)) {
+      if (st && st.textContent === t.noRtc) st.textContent = "";
+      return;
+    }
+  } catch (e) {}
+  if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+  attached = false;
+  hasPlayed = false;
+  cooldownUntil = Date.now() + 1500;
+}
+
+function detach() {
+  attached = false;
+  hasPlayed = false;
+  attachAt = 0;
+  cooldownUntil = Date.now() + 1500;
+  if (pc) { try { pc.close(); } catch (_) {} pc = null; }
+  const old = vid();
+  old.removeAttribute("src");
+  old.srcObject = null;
+  const neu = old.cloneNode(false);
+  neu.removeAttribute("src");
+  neu.srcObject = null;
+  neu.setAttribute("playsinline", "");
+  neu.setAttribute("webkit-playsinline", "");
+  old.replaceWith(neu);
+  bindVideo(neu);
+}
+
+setInterval(() => {
+  const v = vid();
+  if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 45000) detach();
+  if (!attached || v.paused || !hasPlayed) { lastT = -1; stuckSince = 0; return; }
+  if (v.currentTime === lastT) {
+    if (!stuckSince) stuckSince = Date.now();
+    if (Date.now() - stuckSince > 15000) { stuckSince = 0; detach(); }
+  } else stuckSince = 0;
+  lastT = v.currentTime;
+}, 4000);
+
+async function poll() {
+  if (document.visibilityState !== "visible") {
+    if (attached && !vid().paused) vid().pause();
+  } else try {
+    const r = await fetch(base + "/start" + tokQ, {method: "POST"});
+    if (document.visibilityState !== "visible") { setTimeout(poll, 1000); return; }
+    if (!r.ok) { if (st) st.textContent = t.relogin; setTimeout(poll, hasPlayed ? 1000 : 300); return; }
+    if (attached && hasPlayed && vid().paused) vid().play().catch(()=>{});
+    const s = await (await fetch(base + "/api/status" + tokQ)).json();
+` + chromePoll + `
+    rtcOK = !!s.webrtc;
+    if (s.restarts && s.restarts !== seenRestarts) {
+      if (seenRestarts && attached) detach();
+      seenRestarts = s.restarts;
+    }
+    const dead = !s.running && !s.starting;
+    if (attached && dead) detach();
+    if (!attached && s.ready) attach();
+    if (!s.configured && st) st.textContent = t.notConfigured;
+    else if (s.last_error && dead && st) st.textContent = t.lastError + s.last_error;
+  } catch (e) {}
+  const wait = (document.visibilityState === "visible" && !hasPlayed) ? 300 : 1000;
+  setTimeout(poll, wait);
+}
+poll();
+`
+}
+
 func handleStart(w http.ResponseWriter, r *http.Request) {
 	streamer.Touch()
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func handleHLS(w http.ResponseWriter, r *http.Request) {
-	name := filepath.Base(r.URL.Path)
-	if name != playlistName && !strings.HasSuffix(name, ".m4s") && name != "init.mp4" {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	// Cookie HLS from the live tab must not keep the camera awake — only the
-	// JS heartbeat (/start) does. A share-token player has no JS, so token
-	// requests still count as a viewer.
-	if validToken(r) {
-		streamer.Touch()
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	path := hlsFile(name)
-	if name == playlistName {
-		if !hlsPlayable() && !waitForPlayable(15*time.Second) {
-			hlsNotReady(w)
-			return
-		}
-	} else if !hlsFileReady(path) {
-		wait := time.Duration(0)
-		if name == "init.mp4" && streamer.Status().Active() {
-			wait = 15 * time.Second
-		}
-		if wait == 0 || !waitForFile(path, wait) {
-			if name == "init.mp4" && streamer.Status().Active() {
-				hlsNotReady(w)
-				return
-			}
-			http.NotFound(w, r)
-			return
-		}
-	}
-	if strings.HasSuffix(name, ".m3u8") {
-		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		token := ""
-		if t := r.URL.Query().Get("token"); t != "" && validToken(r) {
-			token = t
-		}
-		w.Write(livePlaylist(data, token))
-		return
-	}
-	http.ServeFile(w, r, path)
-}
-
-func hlsNotReady(w http.ResponseWriter) {
-	if streamer.Status().Active() {
-		w.Header().Set("Retry-After", "2")
-		http.Error(w, "starting", http.StatusServiceUnavailable)
-		return
-	}
-	http.Error(w, "not found", http.StatusNotFound)
-}
-
-func livePlaylist(data []byte, token string) []byte {
-	if token != "" {
-		data = rewritePlaylist(data, token)
-	}
-	s := string(data)
-	if strings.Contains(s, "#EXT-X-TARGETDURATION:0") {
-		s = strings.Replace(s, "#EXT-X-TARGETDURATION:0", "#EXT-X-TARGETDURATION:1", 1)
-	}
-	// Safari live HLS otherwise buffers ~3 segments (~+3s) before the first
-	// paint. Only while the window is still short — a long playlist should
-	// stay at the live edge.
-	n := len(playlistSegments([]byte(s)))
-	if n > 0 && n <= 3 && !strings.Contains(s, "#EXT-X-START:") {
-		s = strings.Replace(s, "#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
-	}
-	return []byte(s)
-}
-
-func rewritePlaylist(data []byte, token string) []byte {
-	lines := strings.Split(string(data), "\n")
-	for i, ln := range lines {
-		if idx := strings.Index(ln, `URI="`); idx >= 0 {
-			rest := ln[idx+5:]
-			if end := strings.Index(rest, `"`); end >= 0 {
-				uri := rest[:end]
-				if !strings.Contains(uri, "?") {
-					lines[i] = ln[:idx+5] + uri + "?token=" + token + rest[end:]
-				}
-			}
-			continue
-		}
-		if ln != "" && !strings.HasPrefix(ln, "#") && !strings.Contains(ln, "?") {
-			lines[i] = ln + "?token=" + token
-		}
-	}
-	return []byte(strings.Join(lines, "\n"))
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -564,11 +610,12 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{
 		"running":     st.Running,
 		"starting":    st.Starting,
-		"manifest":    st.Running && hlsPlayable(),
+		"ready":       st.Running && rtcPlayable(),
 		"last_error":  st.LastError,
 		"restarts":    st.Restarts,
 		"configured":  streamer.configured(),
 		"stream_mode": streamMode(),
+		"webrtc":      rtcEnabled(),
 		"device":      ds,
 	}
 	if !st.StartedAt.IsZero() {

@@ -27,13 +27,8 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
 		return
 	}
-	manifest, err := os.ReadFile(playlistPath())
-	if err != nil {
-		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
-		return
-	}
-	segs := playlistSegments(manifest)
-	if len(segs) == 0 {
+	raw, ok := ringSnapshot()
+	if !ok || len(raw) == 0 {
 		http.Error(w, T(langOf(r), "save.empty"), http.StatusServiceUnavailable)
 		return
 	}
@@ -45,9 +40,8 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 	out := filepath.Join(recDir(), name)
 
 	cmd := exec.Command(*ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
-		"-fflags", "+genpts", "-f", "mp4", "-i", "pipe:0",
-		"-map", "0:v:0", "-an", "-c:v", "copy",
-		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
+		"-f", "h264", "-i", "pipe:0",
+		"-c:v", "copy", "-an",
 		"-movflags", "+faststart", out)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -60,13 +54,8 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		defer stdin.Close()
-		if init, err := os.ReadFile(hlsFile("init.mp4")); err == nil {
-			stdin.Write(init)
-		}
-		for _, s := range segs {
-			if data, err := os.ReadFile(hlsFile(s)); err == nil {
-				stdin.Write(data)
-			}
+		if _, err := stdin.Write(raw); err != nil {
+			log.Printf("recordings: write: %v", err)
 		}
 	}()
 	if err := cmd.Wait(); err != nil {

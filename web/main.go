@@ -1,4 +1,4 @@
-// ezvizd is the LE-EZVIZ-UI daemon: site password, on-demand HLS,
+// ezvizd is the LE-EZVIZ-UI daemon: site password, on-demand WebRTC,
 // recordings and battery history on top of the le-ezviz-vs bridge.
 package main
 
@@ -13,11 +13,13 @@ import (
 var (
 	listenAddr = flag.String("listen", "127.0.0.1:8090", "listen address")
 	configPath = flag.String("config", "/opt/ezvizd/config.json", "path to config.json")
-	workDir    = flag.String("workdir", "/var/lib/ezvizd", "working directory (hls/, logs)")
+	workDir    = flag.String("workdir", "/var/lib/ezvizd", "working directory (logs, recordings)")
 	bridgePath = flag.String("bridge", "/opt/ezvizd/le-ezviz-vs", "path to the le-ezviz-vs bridge")
 	ffmpegPath = flag.String("ffmpeg", "/usr/bin/ffmpeg", "path to ffmpeg")
 	basePath   = flag.String("base", "/ezviz", "URL prefix behind nginx")
-	idleSec    = flag.Int("idle", 30, "seconds without viewers before the stream stops")
+	idleSec    = flag.Int("idle", 10, "seconds without viewers before the stream stops")
+	webrtcUDP  = flag.Int("webrtc-udp", 8091, "UDP port for WebRTC ICE; 0 disables")
+	webrtcIP   = flag.String("webrtc-ip", "", "public IPv4 advertised in ICE (empty = auto)")
 	streamer   *Streamer
 )
 
@@ -27,8 +29,8 @@ func main() {
 	if err := loadConfig(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if err := os.MkdirAll(hlsDir(), 0o755); err != nil {
-		log.Fatalf("hlsdir: %v", err)
+	if err := os.MkdirAll(recDir(), 0o755); err != nil {
+		log.Fatalf("recdir: %v", err)
 	}
 	streamer = NewStreamer()
 	devStatusLoad()
@@ -44,6 +46,9 @@ func main() {
 	}
 	go statsCollector()
 	go logRotator()
+	if err := initWebRTC(); err != nil {
+		log.Printf("webrtc: %v (Live unavailable)", err)
+	}
 
 	b := *basePath
 	mux := http.NewServeMux()
@@ -53,12 +58,13 @@ func main() {
 	mux.HandleFunc(b+"/logout", handleLogout)
 	mux.HandleFunc(b+"/setup", auth(handleSetup))
 	mux.HandleFunc(b+"/", auth(handlePlayer))
-	mux.HandleFunc(b+"/start", auth(handleStart))
-	mux.HandleFunc(b+"/hls/", authOrToken(handleHLS))
+	mux.HandleFunc(b+"/share", authOrToken(handleShare))
+	mux.HandleFunc(b+"/start", authOrToken(handleStart))
+	mux.HandleFunc(b+"/webrtc", authOrToken(handleWebRTC))
 	mux.HandleFunc(b+"/save", auth(handleSave))
 	mux.HandleFunc(b+"/recordings", auth(handleRecordings))
 	mux.HandleFunc(b+"/rec/", auth(handleRecFile))
-	mux.HandleFunc(b+"/api/status", auth(handleStatus))
+	mux.HandleFunc(b+"/api/status", authOrToken(handleStatus))
 	mux.HandleFunc(b+"/stats", auth(handleStats))
 	mux.HandleFunc(b+"/api/stats", auth(handleStatsAPI))
 	mux.HandleFunc(b+"/maint", auth(handleMaint))

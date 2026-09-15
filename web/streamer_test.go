@@ -1,9 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -65,44 +62,6 @@ func TestKickDoesNotCountAsViewer(t *testing.T) {
 	}
 }
 
-func TestLivePlaylistColdStartPlaysImmediately(t *testing.T) {
-	in := []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:1\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nlive0.m4s\n")
-	out := string(livePlaylist(in, ""))
-	if !strings.Contains(out, "#EXT-X-START:TIME-OFFSET=0,PRECISE=YES") {
-		t.Fatal(out)
-	}
-	if strings.Contains(out, "#EXT-X-PLAYLIST-TYPE:EVENT") {
-		t.Fatal("EVENT playlists were rolled back")
-	}
-	long := append([]byte(nil), in...)
-	long = append(long, []byte("#EXTINF:1,\nlive1.m4s\n#EXTINF:1,\nlive2.m4s\n#EXTINF:1,\nlive3.m4s\n#EXTINF:1,\nlive4.m4s\n")...)
-	if n := len(playlistSegments(long)); n != 5 {
-		t.Fatalf("segments=%d", n)
-	}
-	if strings.Contains(string(livePlaylist(long, "")), "#EXT-X-START:") {
-		t.Fatal(string(livePlaylist(long, "")))
-	}
-}
-
-func TestLivePlaylistFixesZeroDuration(t *testing.T) {
-	in := []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:0\n#EXTINF:1,\nlive0.m4s\n")
-	out := string(livePlaylist(in, ""))
-	if strings.Contains(out, "#EXT-X-TARGETDURATION:0") {
-		t.Fatal(out)
-	}
-	if !strings.Contains(out, "#EXT-X-TARGETDURATION:1") {
-		t.Fatal(out)
-	}
-}
-
-func TestPlaylistSegments(t *testing.T) {
-	in := []byte("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nlive0.m4s\n#EXTINF:1,\nlive1.m4s?token=x\n")
-	got := playlistSegments(in)
-	if len(got) != 2 || got[0] != "live0.m4s" || got[1] != "live1.m4s" {
-		t.Fatalf("%v", got)
-	}
-}
-
 func TestStreamStatusActive(t *testing.T) {
 	if (StreamStatus{}).Active() {
 		t.Fatal("zero status should be inactive")
@@ -119,26 +78,28 @@ func TestIsLivePath(t *testing.T) {
 	if !isLivePath("/ezviz") || !isLivePath("/ezviz/") {
 		t.Fatal("live paths")
 	}
-	if isLivePath("/ezviz/preview.jpg") || isLivePath("/ezviz/hls/live.m3u8") {
-		t.Fatal("leftover preview must not be the live page")
+	if isLivePath("/ezviz/preview.jpg") || isLivePath("/ezviz/share") {
+		t.Fatal("non-live paths")
 	}
 }
 
-func TestHlsFileReady(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "init.mp4")
-	if hlsFileReady(p) {
-		t.Fatal("missing file")
+func TestRingSnapshotNeedsIDR(t *testing.T) {
+	ringClear()
+	t.Cleanup(ringClear)
+	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x01}, false)
+	if _, ok := ringSnapshot(); ok {
+		t.Fatal("P-frame only must not snapshot")
 	}
-	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	if rtcPlayable() {
+		t.Fatal("not ready without IDR")
 	}
-	if hlsFileReady(p) {
-		t.Fatal("empty-ish file must wait")
+	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x65}, true)
+	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x01}, false)
+	data, ok := ringSnapshot()
+	if !ok || len(data) < 10 {
+		t.Fatalf("snapshot ok=%v len=%d", ok, len(data))
 	}
-	if err := os.WriteFile(p, make([]byte, hlsMinFile), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if !hlsFileReady(p) {
-		t.Fatal("complete file")
+	if !rtcPlayable() || !rtcFresh(time.Second) {
+		t.Fatal("ready after IDR")
 	}
 }

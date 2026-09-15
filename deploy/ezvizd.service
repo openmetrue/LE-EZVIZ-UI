@@ -1,5 +1,5 @@
 [Unit]
-Description=LE-EZVIZ-UI (ezvizd + le-ezviz-vs HLS)
+Description=LE-EZVIZ-UI (ezvizd + le-ezviz-vs WebRTC)
 After=network-online.target
 Wants=network-online.target
 
@@ -12,7 +12,7 @@ ExecStart=/opt/ezvizd/ezvizd \
   -bridge /opt/ezvizd/le-ezviz-vs \
   -ffmpeg /usr/bin/ffmpeg \
   -base /ezviz \
-  -idle 30
+  -idle 10
 Restart=always
 RestartSec=2
 MemoryMax=600M
