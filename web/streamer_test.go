@@ -101,13 +101,10 @@ func TestWaitBothDoesNotHang(t *testing.T) {
 	}
 }
 
-func TestLivePlaylistInjectsStart(t *testing.T) {
-	in := []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:0\n#EXTINF:0.4,\nlive0.m4s\n")
+func TestLivePlaylistFixesZeroDuration(t *testing.T) {
+	in := []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:0\n#EXTINF:1,\nlive0.m4s\n")
 	out := string(livePlaylist(in, ""))
-	if !strings.Contains(out, "#EXT-X-START:TIME-OFFSET=0") {
-		t.Fatal(out)
-	}
-	if !strings.Contains(out, "#EXT-X-PLAYLIST-TYPE:EVENT") {
+	if strings.Contains(out, "#EXT-X-TARGETDURATION:0") {
 		t.Fatal(out)
 	}
 	if !strings.Contains(out, "#EXT-X-TARGETDURATION:1") {

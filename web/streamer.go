@@ -267,15 +267,15 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	ff := exec.CommandContext(ctx, *ffmpegPath,
 		"-hide_banner", "-loglevel", "warning",
 		"-fflags", "+genpts+nobuffer", "-flags", "low_delay",
-		"-probesize", "16384", "-analyzeduration", "0",
+		"-probesize", "32768", "-analyzeduration", "200000",
 		"-f", "mpeg", "-i", fifoPath(),
 		"-flush_packets", "1",
 		"-map", "0:v:0", "-c:v", "copy", "-tag:v", "hvc1",
 		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
-		"-f", "hls", "-hls_time", "1", "-hls_init_time", "0.4", "-hls_list_size", "180",
+		"-f", "hls", "-hls_time", "1", "-hls_init_time", "0.5", "-hls_list_size", "180",
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
-		"-hls_flags", "delete_segments+temp_file+split_by_time+omit_endlist",
+		"-hls_flags", "delete_segments+temp_file+split_by_time",
 		filepath.Join(hlsDir, playlistName))
 	ff.Dir = *workDir
 	if f, err := os.OpenFile(filepath.Join(*workDir, "ffmpeg.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
@@ -369,6 +369,23 @@ func hlsPlayable() bool {
 		n++
 	}
 	return n >= 1
+}
+
+func waitForPlayable(d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if hlsPlayable() {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		running, starting, _, _, _ := streamer.Status()
+		if !running && !starting {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func waitForFile(path string, d time.Duration) bool {

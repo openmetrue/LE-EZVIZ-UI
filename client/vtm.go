@@ -18,13 +18,31 @@ type VTMStream struct {
 }
 
 func (LEZ *LE_EZVIZ_Client) ConnectVTM(vtmIP string, vtmPort int, deviceResource Resource, deviceInfos DeviceInfos, devicePwd, vtmPublicKey string) (*VTMStream, error) {
+	vs, err := LEZ.dialVTM(vtmIP, vtmPort, true)
+	if err != nil {
+		return nil, err
+	}
+	vs.VTMPublicKey = vtmPublicKey
+	vs.DevicePassword = devicePwd
+	return vs, nil
+}
+
+// DialVTM connects without tracking, so SIGUSR1 / InterruptStream will not
+// close a warm idle socket sitting in prefetch.
+func (LEZ *LE_EZVIZ_Client) DialVTM(vtmIP string, vtmPort int) (*VTMStream, error) {
+	return LEZ.dialVTM(vtmIP, vtmPort, false)
+}
+
+func (LEZ *LE_EZVIZ_Client) dialVTM(vtmIP string, vtmPort int, track bool) (*VTMStream, error) {
 	sock, err := dialTCP(vtmIP + ":" + strconv.Itoa(vtmPort))
 	if err != nil {
 		log.Error("Error dialing VTM", zap.Error(err))
 		return nil, err
 	}
-	VS := &VTMStream{Conn: sock, VTMIP: vtmIP, VTMPort: vtmPort, VTMPublicKey: vtmPublicKey}
-	LEZ.TrackConn(sock)
+	VS := &VTMStream{Conn: sock, VTMIP: vtmIP, VTMPort: vtmPort}
+	if track {
+		LEZ.TrackConn(sock)
+	}
 	return VS, nil
 }
 

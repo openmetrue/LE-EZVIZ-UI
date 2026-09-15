@@ -223,11 +223,12 @@ func (w *warmVTM) prefetch(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI
 			log.Error("idleWait: prefetch token", zap.Error(err))
 			return
 		}
-		vs, err := LEZ.ConnectVTM(v.ExternalIP, v.Port, RI, DI, "", v.PublicKey.Key)
+		vs, err := LEZ.DialVTM(v.ExternalIP, v.Port)
 		if err != nil {
 			log.Error("idleWait: prefetch VTM", zap.Error(err))
 			return
 		}
+		vs.VTMPublicKey = v.PublicKey.Key
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		if w.gen != gen {
@@ -256,16 +257,7 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 	for {
 		t0 := time.Now()
 		LEZ.DropConns()
-		if fifo == nil && *idleWait && *out != "" && *out != "-" {
-			f, err := os.OpenFile(*out, os.O_WRONLY, 0)
-			if err != nil {
-				unblockFifoWriter()
-				return err
-			}
-			fifo = f
-			LEZ.PipeMode = true
-			LEZ.StreamOut = f
-		}
+		usedWarm := warm != nil
 		VS, err := tokenAndVTM(LEZ, v, RI, DI, warm)
 		if err != nil {
 			if fifo == nil {
@@ -278,6 +270,11 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 		RStreamInfoRsp, err := LEZ.StartVTMStream(VS, URL)
 		if err != nil {
 			VS.Conn.Close()
+			if usedWarm {
+				log.Warn("idleWait: warm VTM dead, redialing", zap.Error(err))
+				warm = nil
+				continue
+			}
 			if fifo == nil {
 				unblockFifoWriter()
 			}
@@ -299,6 +296,17 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 				unblockFifoWriter()
 			}
 			return err
+		}
+		if fifo == nil && *idleWait && *out != "" && *out != "-" {
+			f, err := os.OpenFile(*out, os.O_WRONLY, 0)
+			if err != nil {
+				VTDUStream.Conn.Close()
+				VS.Conn.Close()
+				return err
+			}
+			fifo = f
+			LEZ.PipeMode = true
+			LEZ.StreamOut = f
 		}
 		log.Info("stream handshake",
 			zap.Duration("vtm", vtmAt),

@@ -349,11 +349,7 @@ let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestart
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
   el.addEventListener("playing", () => { hasPlayed = true; prev.style.display = "none"; if (st.textContent === t.waking) st.textContent = ""; });
-  el.addEventListener("error", () => {
-    if (!attached) return;
-    attached = false;
-    cooldownUntil = Date.now() + 400;
-  });
+  el.addEventListener("error", () => { if (attached) detach(); });
 }
 bindVideo(vid());
 
@@ -368,7 +364,6 @@ function attach() {
   hasPlayed = false;
   attachAt = Date.now();
   goneHits = 0;
-  prev.style.display = "none";
   v.src = base + "/hls/`+playlistName+`?t=" + Date.now();
   v.play().catch(()=>{});
 }
@@ -405,9 +400,8 @@ async function poll() {
   } else try {
     const r = await fetch(base + "/start", {method: "POST"});
     if (document.visibilityState !== "visible") { setTimeout(poll, 1000); return; }
-    if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, 1000); return; }
-    if (!attached) attach();
-    else if (vid().paused) vid().play().catch(()=>{});
+    if (!r.ok) { st.textContent = t.relogin; setTimeout(poll, hasPlayed ? 1000 : 300); return; }
+    if (attached && hasPlayed && vid().paused) vid().play().catch(()=>{});
     const s = await (await fetch(base + "/api/status")).json();
     if (s.device && s.device.battery) {
       const d = s.device;
@@ -426,12 +420,14 @@ async function poll() {
     if (ready) { readyHits++; goneHits = 0; } else { readyHits = 0; goneHits++; }
     const dead = !s.running && !s.starting;
     if (attached && dead && goneHits >= 2) detach();
+    if (ready && !attached) attach();
     if (!s.configured) st.textContent = t.notConfigured;
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
     else if (!hasPlayed && (s.starting || s.running)) st.textContent = t.waking;
     else if (hasPlayed && st.textContent === t.waking) st.textContent = "";
   } catch (e) {}
-  setTimeout(poll, 1000);
+  const wait = (document.visibilityState === "visible" && !hasPlayed) ? 300 : 1000;
+  setTimeout(poll, wait);
 }
 poll();
 
@@ -492,15 +488,25 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	path := filepath.Join(hlsDir(), name)
-	if _, err := os.Stat(path); err != nil {
+	if name == playlistName {
+		if !hlsPlayable() {
+			running, starting, _, _, _ := streamer.Status()
+			if (!running && !starting) || !waitForPlayable(20*time.Second) {
+				running, starting, _, _, _ = streamer.Status()
+				if running || starting {
+					w.Header().Set("Retry-After", "2")
+					http.Error(w, "starting", http.StatusServiceUnavailable)
+					return
+				}
+				http.Error(w, "not found", http.StatusNotFound)
+				return
+			}
+		}
+	} else if _, err := os.Stat(path); err != nil {
 		running, starting, _, _, _ := streamer.Status()
 		wait := time.Duration(0)
 		if running || starting {
-			if name == playlistName {
-				wait = 20 * time.Second
-			} else {
-				wait = 5 * time.Second
-			}
+			wait = 5 * time.Second
 		}
 		if wait == 0 || !waitForFile(path, wait) {
 			running, starting, _, _, _ = streamer.Status()
@@ -535,9 +541,6 @@ func livePlaylist(data []byte, token string) []byte {
 		data = rewritePlaylist(data, token)
 	}
 	s := string(data)
-	if !strings.Contains(s, "#EXT-X-START:") {
-		s = strings.Replace(s, "#EXTM3U\n", "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-START:TIME-OFFSET=0\n", 1)
-	}
 	if strings.Contains(s, "#EXT-X-TARGETDURATION:0") {
 		s = strings.Replace(s, "#EXT-X-TARGETDURATION:0", "#EXT-X-TARGETDURATION:1", 1)
 	}
