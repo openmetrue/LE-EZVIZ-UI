@@ -27,7 +27,7 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
 		return
 	}
-	raw, ok := ringSnapshot()
+	raw, ok := rawRingSnapshot()
 	if !ok || len(raw) == 0 {
 		http.Error(w, T(langOf(r), "save.empty"), http.StatusServiceUnavailable)
 		return
@@ -39,9 +39,10 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 	name := "rec-" + time.Now().Format("2006-01-02_15-04-05") + ".mp4"
 	out := filepath.Join(recDir(), name)
 
+	// Remux camera MPEG-PS (HEVC, full res) — no re-encode.
 	cmd := exec.Command(*ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
-		"-f", "h264", "-i", "pipe:0",
-		"-c:v", "copy", "-an",
+		"-f", "mpeg", "-i", "pipe:0",
+		"-c", "copy", "-an",
 		"-movflags", "+faststart", out)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

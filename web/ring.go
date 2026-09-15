@@ -18,6 +18,7 @@ var (
 	ringChunks   []h264Chunk
 	rtcReady     bool
 	lastSampleAt time.Time
+	lastIDR      []byte
 )
 
 func ringPush(au []byte, idr bool) {
@@ -35,6 +36,7 @@ func ringPush(au []byte, idr bool) {
 	lastSampleAt = now
 	if idr {
 		rtcReady = true
+		lastIDR = append([]byte(nil), au...)
 	}
 	cutoff := now.Add(-ringKeep)
 	i := 0
@@ -52,9 +54,20 @@ func ringPush(au []byte, idr bool) {
 func ringClear() {
 	ringMu.Lock()
 	ringChunks = nil
+	lastIDR = nil
 	rtcReady = false
 	lastSampleAt = time.Time{}
 	ringMu.Unlock()
+	rawRingClear()
+}
+
+func ringLastIDR() []byte {
+	ringMu.Lock()
+	defer ringMu.Unlock()
+	if len(lastIDR) == 0 {
+		return nil
+	}
+	return append([]byte(nil), lastIDR...)
 }
 
 func rtcPlayable() bool {

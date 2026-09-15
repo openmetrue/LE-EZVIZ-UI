@@ -13,6 +13,7 @@ import (
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 	"github.com/pion/webrtc/v4/pkg/media/h264reader"
@@ -121,9 +122,6 @@ func rtcMaybeCreateTrack() *webrtc.TrackLocalStaticSample {
 	defer rtcMu.Unlock()
 	if rtcTrack != nil {
 		return rtcTrack
-	}
-	if len(rtcSPS) == 0 || len(rtcPPS) == 0 {
-		return nil
 	}
 	t, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{
@@ -292,18 +290,10 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("webrtc: offer %s", offerH264Lines(offer.SDP))
 
-	deadline := time.Now().Add(20 * time.Second)
-	var track *webrtc.TrackLocalStaticSample
-	for {
-		track = rtcEnsureTrack()
-		if track != nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			http.Error(w, "no track yet", http.StatusServiceUnavailable)
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	track := rtcEnsureTrack()
+	if track == nil {
+		http.Error(w, "no track", http.StatusServiceUnavailable)
+		return
 	}
 
 	pc, err := rtcAPI.NewPeerConnection(webrtc.Configuration{})
@@ -318,10 +308,18 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		buf := make([]byte, 1500)
 		for {
-			if _, _, rtcpErr := sender.Read(buf); rtcpErr != nil {
+			pkts, _, err := sender.ReadRTCP()
+			if err != nil {
 				return
+			}
+			for _, p := range pkts {
+				switch p.(type) {
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					if idr := ringLastIDR(); len(idr) > 0 {
+						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
+					}
+				}
 			}
 		}
 	}()
@@ -350,7 +348,7 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	}
 	select {
 	case <-gather:
-	case <-time.After(3 * time.Second):
+	case <-time.After(100 * time.Millisecond):
 	}
 	rtcMu.Lock()
 	rtcNeedIDR = true

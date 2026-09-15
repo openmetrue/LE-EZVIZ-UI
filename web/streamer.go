@@ -262,38 +262,73 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	}
 	ringClear()
 	defer rtcDropTrack()
+	_ = rtcEnsureTrack()
+
+	pr, pw := io.Pipe()
+	var closePw sync.Once
+	closeWriter := func() { closePw.Do(func() { _ = pw.Close() }) }
 
 	args := []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-threads", "1", "-filter_threads", "1",
 		"-fflags", "+genpts+nobuffer", "-flags", "low_delay",
-		"-probesize", "32768", "-analyzeduration", "200000",
-		"-f", "mpeg", "-i", fifoPath(),
+		"-probesize", "32768", "-analyzeduration", "100000",
+		"-f", "mpeg", "-i", "pipe:0",
 		"-flush_packets", "1",
 		"-map", "0:v:0",
-		// fast_bilinear: cheaper 1080→720 than default bicubic; fine for a 15fps cam.
 		"-vf", "scale=-2:720:flags=fast_bilinear",
-		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-		"-b:v", "1600k", "-maxrate", "2000k", "-bufsize", "4000k",
+		"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "3000k",
 		"-g", "15", "-keyint_min", "15", "-sc_threshold", "0", "-bf", "0",
 		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0",
 		"-an", "-f", "h264", "pipe:1",
 	}
 	ff := exec.CommandContext(ctx, *ffmpegPath, args...)
 	ff.Dir = *workDir
+	ff.Stdin = pr
 	if f, err := os.OpenFile(ffmpegLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		defer f.Close()
 		ff.Stderr = f
 	}
 	h264, err := ff.StdoutPipe()
 	if err != nil {
+		closeWriter()
 		return fmt.Errorf("h264 pipe: %w", err)
 	}
 	if err := ff.Start(); err != nil {
+		closeWriter()
 		return fmt.Errorf("ffmpeg start: %w", err)
 	}
+	if ff.Process != nil {
+		_ = syscall.Setpriority(syscall.PRIO_PROCESS, ff.Process.Pid, -10)
+	}
 	go pumpH264(h264)
+
+	// Tee camera MPEG-PS: original → raw ring (Save), copy → ffmpeg (WebRTC).
+	go func() {
+		defer closeWriter()
+		f, err := os.OpenFile(fifoPath(), os.O_RDONLY, 0)
+		if err != nil {
+			log.Printf("streamer: fifo: %v", err)
+			return
+		}
+		defer f.Close()
+		buf := make([]byte, 32<<10)
+		for {
+			n, err := f.Read(buf)
+			if n > 0 {
+				rawRingPush(buf[:n])
+				if _, werr := pw.Write(buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
 	s.mu.Lock()
 	hold := s.hold
 	holdIn := s.holdIn
@@ -307,6 +342,7 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	if holdIn != nil {
 		if _, err := holdIn.Write([]byte("\n")); err != nil {
 			ff.Process.Kill()
+			closeWriter()
 			return fmt.Errorf("session kick: %w", err)
 		}
 	}
@@ -322,11 +358,13 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	select {
 	case <-ctx.Done():
 		signalHold(hold)
+		closeWriter()
 		ff.Process.Kill()
 		<-done
 		return nil
 	case err := <-done:
 		signalHold(hold)
+		closeWriter()
 		if ctx.Err() != nil {
 			return nil
 		}

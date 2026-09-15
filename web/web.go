@@ -431,6 +431,10 @@ const bat = document.getElementById("bat");
 // withChrome enables battery/mode status fields used on the authenticated Live page.
 func webrtcPlayerJS(token string, withChrome bool) string {
 	tokJS := template.JSEscapeString(token)
+	rtcJS := "false"
+	if rtcEnabled() {
+		rtcJS = "true"
+	}
 	chromePoll := ""
 	if withChrome {
 		chromePoll = `
@@ -449,7 +453,7 @@ func webrtcPlayerJS(token string, withChrome bool) string {
 const token = "` + tokJS + `";
 const tokQ = token ? ("?token=" + encodeURIComponent(token)) : "";
 const st = document.getElementById("st");
-let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, pc = null, rtcOK = false;
+let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, pc = null, rtcOK = ` + rtcJS + `;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -462,10 +466,12 @@ bindVideo(vid());
 
 function waitIce(conn) {
   return new Promise((res) => {
-    const tmr = setTimeout(() => res(), 2500);
-    if (conn.iceGatheringState === "complete") { clearTimeout(tmr); res(); return; }
+    if (conn.iceGatheringState === "complete") { res(); return; }
+    const tmr = setTimeout(() => res(), 100);
+    const onCand = () => { clearTimeout(tmr); conn.removeEventListener("icecandidate", onCand); res(); };
+    conn.addEventListener("icecandidate", onCand);
     conn.addEventListener("icegatheringstatechange", () => {
-      if (conn.iceGatheringState === "complete") { clearTimeout(tmr); res(); }
+      if (conn.iceGatheringState === "complete") { clearTimeout(tmr); conn.removeEventListener("icecandidate", onCand); res(); }
     });
   });
 }
@@ -473,7 +479,8 @@ function waitIce(conn) {
 async function attachRTC() {
   const v = vid();
   const RTC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
-  pc = new RTC({iceServers: [{urls: "stun:stun.l.google.com:19302"}]});
+  // Host candidates only — server advertises a public ICE IP; STUN only adds gather delay.
+  pc = new RTC({iceServers: []});
   pc.addEventListener("connectionstatechange", () => {
     if (pc && (pc.connectionState === "failed" || pc.connectionState === "disconnected") && attached) detach();
   });
@@ -529,7 +536,7 @@ async function attach() {
   attachAt = Date.now();
   try {
     await attachRTC();
-    if (await waitPlaying(15000)) {
+    if (await waitPlaying(20000)) {
       if (st && st.textContent === t.noRtc) st.textContent = "";
       return;
     }
@@ -537,14 +544,14 @@ async function attach() {
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   attached = false;
   hasPlayed = false;
-  cooldownUntil = Date.now() + 1500;
+  cooldownUntil = Date.now() + 400;
 }
 
 function detach() {
   attached = false;
   hasPlayed = false;
   attachAt = 0;
-  cooldownUntil = Date.now() + 1500;
+  cooldownUntil = Date.now() + 400;
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   const old = vid();
   old.removeAttribute("src");
@@ -586,14 +593,22 @@ async function poll() {
     }
     const dead = !s.running && !s.starting;
     if (attached && dead) detach();
-    if (!attached && s.ready) attach();
+    if (!attached && (s.starting || s.running || s.ready)) attach();
     if (!s.configured && st) st.textContent = t.notConfigured;
     else if (s.last_error && dead && st) st.textContent = t.lastError + s.last_error;
   } catch (e) {}
-  const wait = (document.visibilityState === "visible" && !hasPlayed) ? 300 : 1000;
+  const wait = (document.visibilityState === "visible" && !hasPlayed) ? 250 : 1000;
   setTimeout(poll, wait);
 }
-poll();
+
+(async () => {
+  try {
+    const r = await fetch(base + "/start" + tokQ, {method: "POST"});
+    if (!r.ok && st) st.textContent = t.relogin;
+  } catch (_) {}
+  if (rtcOK) attach();
+  poll();
+})();
 `
 }
 
