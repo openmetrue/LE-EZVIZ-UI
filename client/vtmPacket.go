@@ -10,51 +10,28 @@ type VTMPacket struct {
 	Body   []byte
 }
 
-// This only encodes message unencrypted channel
-func EncodeVTMPacket(data []byte, Chan byte, messageCode int) []byte {
+func EncodeVTMPacket(data []byte, chanID byte, messageCode int) []byte {
 	header := make([]byte, 8)
 	header[0] = 0x24
-	header[1] = Chan
-	var b [2]byte
-	binary.BigEndian.PutUint16(b[:], uint16(len(data)))
-	header[2] = b[0]
-	header[3] = b[1]
-	header[4] = 0
-	header[5] = 0
-	var m [2]byte
-	binary.BigEndian.PutUint16(m[:], uint16(messageCode))
-	header[6] = m[0]
-	header[7] = m[1]
-	// log.Sugar().Debugf("ENCVTMP: %x", header)
+	header[1] = chanID
+	binary.BigEndian.PutUint16(header[2:4], uint16(len(data)))
+	binary.BigEndian.PutUint16(header[6:8], uint16(messageCode))
 	return append(header, data...)
 }
 
-func (p *VTMPacket) DecodeHeader() (Length uint16, Channel byte, Sequence uint16, Message uint16, err error) {
+func (p *VTMPacket) DecodeHeader() (length uint16, channel byte, sequence uint16, message uint16, err error) {
 	if p.Header[0] != 0x24 {
-		return 0, 0, 0, 0, errors.New("Magic not found")
+		return 0, 0, 0, 0, errors.New("magic not found")
 	}
 	switch p.Header[1] {
-	case 0x00:
-	case 0x01:
-		break
-	case 0x0a:
-		return 0, 0, 0, 0, errors.New("encrypted channel currently unsupported")
-	case 0x0b:
+	case CHAN_MSG, CHAN_STREAM:
+	case 0x0a, 0x0b:
 		return 0, 0, 0, 0, errors.New("encrypted channel currently unsupported")
 	default:
-		return 0, 0, 0, 0, errors.New("Unknown channel")
+		return 0, 0, 0, 0, errors.New("unknown channel")
 	}
-	Length = binary.BigEndian.Uint16(p.Header[2:4])
-	Sequence = binary.BigEndian.Uint16(p.Header[4:6])
-	Message = binary.BigEndian.Uint16(p.Header[6:8])
-	return Length, p.Header[1], Sequence, Message, nil
+	length = binary.BigEndian.Uint16(p.Header[2:4])
+	sequence = binary.BigEndian.Uint16(p.Header[4:6])
+	message = binary.BigEndian.Uint16(p.Header[6:8])
+	return length, p.Header[1], sequence, message, nil
 }
-
-// func (p *VTMPacket) DecodeEncryptedChannelHeader() {
-// 	switch p.Header[1] {
-// 	case 0x0a:
-// 		log.Debug("encrypted message")
-// 	case 0x0b:
-// 		log.Debug("encrypted stream")
-// 	}
-// }

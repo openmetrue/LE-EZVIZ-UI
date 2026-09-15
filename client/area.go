@@ -10,5 +10,3 @@ var Regions = map[string]string{
 	"Russia":       "",
 	"SouthAmerica": "isa",
 }
-
-var CurrentRegion = "Europe"

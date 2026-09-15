@@ -256,26 +256,24 @@ func changeSitePassword(r *http.Request, lang string) string {
 	return `<p class="ok">` + esc(T(lang, "setup.pwOk")) + `</p>`
 }
 
-func streamModeSeg(lang, current string) string {
-	if current != "always" {
-		current = "on_demand"
-	}
-	return `<div class="seg">` + streamModeSegItem(lang, "on_demand", current) + streamModeSegItem(lang, "always", current) + `</div>`
-}
-
-func streamModeSegItem(lang, mode, current string) string {
-	on := mode == current
+func segForm(action, formName, field, value, label string, on bool) string {
 	cls, dis := "", ""
 	if on {
 		cls = ` class="on"`
 		dis = " disabled"
 	}
-	key := "setup.streamOnDemand"
-	if mode == "always" {
-		key = "setup.streamAlways"
+	return `<form method="post" action="` + action + `"><input type="hidden" name="form" value="` + formName + `"><input type="hidden" name="` + field + `" value="` + value + `"><button type="submit"` + cls + dis + `>` + label + `</button></form>`
+}
+
+func streamModeSeg(lang, current string) string {
+	if current != "always" {
+		current = "on_demand"
 	}
 	esc := template.HTMLEscapeString
-	return `<form method="post" action="#stream-mode"><input type="hidden" name="form" value="stream"><input type="hidden" name="mode" value="` + mode + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
+	return `<div class="seg">` +
+		segForm("#stream-mode", "stream", "mode", "on_demand", esc(T(lang, "setup.streamOnDemand")), current == "on_demand") +
+		segForm("#stream-mode", "stream", "mode", "always", esc(T(lang, "setup.streamAlways")), current == "always") +
+		`</div>`
 }
 
 func changeStreamMode(r *http.Request, lang string) string {
@@ -341,7 +339,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 </div>
 <p class="statusline" id="mode"></p>
 <script>
-`+webrtcPlayerJS("", true)+`
+`+webrtcPlayerJS("")+`
 const shareURL = "`+template.JSEscapeString(shareURL)+`";
 const t = `+string(jsT)+`;
 const bat = document.getElementById("bat");
@@ -401,7 +399,7 @@ func handleShare(w http.ResponseWriter, r *http.Request) {
 </div>
 <p class="statusline"><span id="bat"></span><span id="st"></span></p>
 <script>
-` + webrtcPlayerJS(token, true) + `
+` + webrtcPlayerJS(token) + `
 const t = ` + string(jsT) + `;
 const bat = document.getElementById("bat");
 </script>`
@@ -428,16 +426,13 @@ const bat = document.getElementById("bat");
 }
 
 // webrtcPlayerJS is the shared Live/Share WebRTC client. tokenQ is appended to API URLs.
-// withChrome enables battery/mode status fields used on the authenticated Live page.
-func webrtcPlayerJS(token string, withChrome bool) string {
+func webrtcPlayerJS(token string) string {
 	tokJS := template.JSEscapeString(token)
 	rtcJS := "false"
 	if rtcEnabled() {
 		rtcJS = "true"
 	}
-	chromePoll := ""
-	if withChrome {
-		chromePoll = `
+	chromePoll := `
     if (typeof bat !== "undefined" && s.device && s.device.battery) {
       const d = s.device;
       let line = t.battery + ": " + d.battery + "%";
@@ -448,12 +443,12 @@ func webrtcPlayerJS(token string, withChrome bool) string {
     }
     if (typeof modeEl !== "undefined" && modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
 `
-	}
 	return `const base = "` + *basePath + `";
 const token = "` + tokJS + `";
 const tokQ = token ? ("?token=" + encodeURIComponent(token)) : "";
 const st = document.getElementById("st");
 let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, pc = null, rtcOK = ` + rtcJS + `;
+let lastPkts = 0, lastDecoded = 0, decodeStuckSince = 0, streamReady = false;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -532,10 +527,11 @@ async function attach() {
     if (st) st.textContent = t.noRtc;
     return;
   }
-  if (!rtcOK) return;
+  if (!rtcOK || !streamReady) return;
   attached = true;
   hasPlayed = false;
   attachAt = Date.now();
+  lastPkts = 0; lastDecoded = 0; decodeStuckSince = 0;
   try {
     await attachRTC();
     if (await waitPlaying(20000)) {
@@ -546,14 +542,15 @@ async function attach() {
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   attached = false;
   hasPlayed = false;
-  cooldownUntil = Date.now() + 400;
+  cooldownUntil = Date.now() + 800;
 }
 
 function detach() {
   attached = false;
   hasPlayed = false;
   attachAt = 0;
-  cooldownUntil = Date.now() + 400;
+  lastPkts = 0; lastDecoded = 0; decodeStuckSince = 0;
+  cooldownUntil = Date.now() + 800;
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   const old = vid();
   old.removeAttribute("src");
@@ -567,16 +564,44 @@ function detach() {
   bindVideo(neu);
 }
 
+async function checkDecodeHealth() {
+  if (!attached || !pc) return;
+  const v = vid();
+  // No dimensions after ICE + keyframe budget → gray/black stuck; full renegotiate.
+  if (attachAt && Date.now() - attachAt > 8000 && v.videoWidth === 0) {
+    detach();
+    return;
+  }
+  try {
+    const stats = await pc.getStats();
+    let pkts = 0, decoded = 0;
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")) {
+        pkts += r.packetsReceived || 0;
+        decoded += r.framesDecoded || 0;
+      }
+    });
+    if (pkts > lastPkts + 8 && decoded <= lastDecoded) {
+      if (!decodeStuckSince) decodeStuckSince = Date.now();
+      // RTP flowing but decoder not producing frames → classic gray lockup.
+      if (Date.now() - decodeStuckSince > 4000) { decodeStuckSince = 0; detach(); return; }
+    } else decodeStuckSince = 0;
+    lastPkts = pkts;
+    lastDecoded = decoded;
+  } catch (_) {}
+}
+
 setInterval(() => {
   const v = vid();
   if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 45000) detach();
+  checkDecodeHealth();
   if (!attached || v.paused || !hasPlayed) { lastT = -1; stuckSince = 0; return; }
   if (v.currentTime === lastT) {
     if (!stuckSince) stuckSince = Date.now();
     if (Date.now() - stuckSince > 15000) { stuckSince = 0; detach(); }
   } else stuckSince = 0;
   lastT = v.currentTime;
-}, 4000);
+}, 2000);
 
 async function poll() {
   if (document.visibilityState !== "visible") {
@@ -589,13 +614,15 @@ async function poll() {
     const s = await (await fetch(base + "/api/status" + tokQ)).json();
 ` + chromePoll + `
     rtcOK = !!s.webrtc;
+    streamReady = !!s.ready;
     if (s.restarts && s.restarts !== seenRestarts) {
       if (seenRestarts && attached) detach();
       seenRestarts = s.restarts;
     }
     const dead = !s.running && !s.starting;
     if (attached && dead) detach();
-    if (!attached && (s.starting || s.running || s.ready)) attach();
+    // Wait for an encoder IDR (ready) before joining — mid-GOP join stays gray forever.
+    if (!attached && streamReady) attach();
     if (!s.configured && st) st.textContent = t.notConfigured;
     else if (s.last_error && dead && st) st.textContent = t.lastError + s.last_error;
   } catch (e) {}
@@ -608,7 +635,6 @@ async function poll() {
     const r = await fetch(base + "/start" + tokQ, {method: "POST"});
     if (!r.ok && st) st.textContent = t.relogin;
   } catch (_) {}
-  if (rtcOK) attach();
   poll();
 })();
 `

@@ -2,36 +2,21 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pion/ice/v4"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
-	"github.com/pion/webrtc/v4/pkg/media/h264reader"
 )
 
 const h264Fmtp = "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
 
-var (
-	rtcAPI       *webrtc.API
-	rtcMu        sync.Mutex
-	rtcTrack     *webrtc.TrackLocalStaticSample
-	rtcSPS       []byte
-	rtcPPS       []byte
-	rtcNeedIDR   bool
-	rtcPLIAt     time.Time
-)
-
-func rtcEnabled() bool { return rtcAPI != nil }
+var rtcAPI *webrtc.API
 
 func publicIPv4() string {
 	if *webrtcIP != "" {
@@ -118,176 +103,6 @@ func initWebRTC() error {
 	return nil
 }
 
-func rtcMaybeCreateTrack() *webrtc.TrackLocalStaticSample {
-	rtcMu.Lock()
-	defer rtcMu.Unlock()
-	if rtcTrack != nil {
-		return rtcTrack
-	}
-	t, err := webrtc.NewTrackLocalStaticSample(
-		webrtc.RTPCodecCapability{
-			MimeType:     webrtc.MimeTypeH264,
-			ClockRate:    90000,
-			SDPFmtpLine:  h264Fmtp,
-			RTCPFeedback: videoRTCPFeedback(),
-		},
-		"video", "ezvizd",
-	)
-	if err != nil {
-		log.Printf("webrtc: track: %v", err)
-		return nil
-	}
-	rtcTrack = t
-	rtcNeedIDR = true
-	log.Printf("webrtc: H264 track ready")
-	return t
-}
-
-func rtcEnsureTrack() *webrtc.TrackLocalStaticSample {
-	return rtcMaybeCreateTrack()
-}
-
-func rtcDropTrack() {
-	rtcMu.Lock()
-	rtcTrack = nil
-	rtcSPS, rtcPPS = nil, nil
-	rtcNeedIDR = true
-	rtcMu.Unlock()
-	ringClear()
-}
-
-func rtcRequestIDR() {
-	rtcMu.Lock()
-	rtcNeedIDR = true
-	rtcMu.Unlock()
-}
-
-func pumpH264(r io.Reader) {
-	hr, err := h264reader.NewReader(r)
-	if err != nil {
-		log.Printf("webrtc: h264 reader: %v", err)
-		return
-	}
-	logged := false
-	var lastWrite time.Time
-	for {
-		nal, err := hr.NextNAL()
-		if err != nil {
-			return
-		}
-		rtcMu.Lock()
-		switch nal.UnitType {
-		case h264reader.NalUnitTypeSPS:
-			rtcSPS = append([]byte(nil), nal.Data...)
-		case h264reader.NalUnitTypePPS:
-			rtcPPS = append([]byte(nil), nal.Data...)
-		}
-		rtcMu.Unlock()
-		switch nal.UnitType {
-		case h264reader.NalUnitTypeSPS, h264reader.NalUnitTypePPS:
-			rtcMaybeCreateTrack()
-			continue
-		case h264reader.NalUnitTypeSEI, h264reader.NalUnitTypeAUD,
-			h264reader.NalUnitTypeFiller, h264reader.NalUnitTypeEndOfSequence,
-			h264reader.NalUnitTypeEndOfStream:
-			continue
-		}
-		if nal.UnitType != h264reader.NalUnitTypeCodedSliceIdr &&
-			nal.UnitType != h264reader.NalUnitTypeCodedSliceNonIdr &&
-			nal.UnitType != h264reader.NalUnitTypeCodedSliceAux {
-			continue
-		}
-		track := rtcMaybeCreateTrack()
-		idr := nal.UnitType == h264reader.NalUnitTypeCodedSliceIdr
-		rtcMu.Lock()
-		needIDR := rtcNeedIDR
-		sps, pps := rtcSPS, rtcPPS
-		if idr {
-			rtcNeedIDR = false
-		}
-		rtcMu.Unlock()
-		if needIDR && !idr {
-			continue
-		}
-		var au []byte
-		if idr {
-			au = annexBNAL(sps, pps, nal.Data)
-		} else {
-			au = annexBNAL(nal.Data)
-		}
-		ringPush(au, idr)
-		if track != nil {
-			// Pace RTP by real inter-arrival, capped so a slow camera
-			// doesn't inflate the browser jitter buffer.
-			dur := 66 * time.Millisecond // ~15fps default
-			now := time.Now()
-			if !lastWrite.IsZero() {
-				if d := now.Sub(lastWrite); d >= 33*time.Millisecond && d <= 120*time.Millisecond {
-					dur = d
-				}
-			}
-			lastWrite = now
-			if err := track.WriteSample(media.Sample{Data: au, Duration: dur}); err != nil {
-				if errors.Is(err, io.ErrClosedPipe) {
-					continue
-				}
-				return
-			}
-		}
-		if !logged {
-			logged = true
-			nt := nal.UnitType
-			log.Printf("webrtc: first H264 sample type=%s bytes=%d", nt.String(), len(au))
-		}
-	}
-}
-
-func annexBNAL(nals ...[]byte) []byte {
-	var out []byte
-	start := []byte{0x00, 0x00, 0x00, 0x01}
-	for _, n := range nals {
-		if len(n) == 0 {
-			continue
-		}
-		out = append(out, start...)
-		out = append(out, n...)
-	}
-	return out
-}
-
-func offerH264Lines(sdp string) string {
-	pts := map[string]bool{}
-	var out []string
-	for _, line := range strings.Split(sdp, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		low := strings.ToLower(line)
-		if strings.HasPrefix(low, "a=rtpmap:") && strings.Contains(strings.ToUpper(line), "H264") {
-			out = append(out, line)
-			fields := strings.Fields(line)
-			if len(fields) >= 1 {
-				pt := strings.TrimPrefix(fields[0], "a=rtpmap:")
-				pt = strings.Split(pt, " ")[0]
-				pts[pt] = true
-			}
-		}
-	}
-	for _, line := range strings.Split(sdp, "\n") {
-		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
-		if !strings.HasPrefix(strings.ToLower(line), "a=fmtp:") {
-			continue
-		}
-		rest := strings.TrimPrefix(line, "a=fmtp:")
-		pt := strings.Fields(rest)[0]
-		if pts[pt] {
-			out = append(out, line)
-		}
-	}
-	if len(out) > 4 {
-		out = out[:4]
-	}
-	return strings.Join(out, " | ")
-}
-
 func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -306,9 +121,11 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "offer has no H264", http.StatusBadRequest)
 		return
 	}
-	log.Printf("webrtc: offer %s", offerH264Lines(offer.SDP))
+	log.Printf("webrtc: offer ok")
 
-	track := rtcEnsureTrack()
+	// Arm keyframe gating BEFORE AddTrack so the new subscriber cannot
+	// receive mid-GOP P-frames (Safari then stays gray forever).
+	track, seed := live.BeginViewer()
 	if track == nil {
 		http.Error(w, "no track", http.StatusServiceUnavailable)
 		return
@@ -325,6 +142,8 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	live.SeedViewer(track, seed)
+
 	go func() {
 		for {
 			pkts, _, err := sender.ReadRTCP()
@@ -334,20 +153,7 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 			for _, p := range pkts {
 				switch p.(type) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
-					rtcMu.Lock()
-					if rtcNeedIDR || time.Since(rtcPLIAt) < 100*time.Millisecond {
-						rtcMu.Unlock()
-						continue
-					}
-					rtcPLIAt = time.Now()
-					rtcNeedIDR = true
-					rtcMu.Unlock()
-					log.Printf("webrtc: PLI/FIR — replay IDR, wait fresh keyframe")
-					// Seed decoder now; pump drops P-frames until a fresh IDR
-					// (P after a replayed IDR referencing a newer lost key makes gray worse).
-					if idr := ringLastIDR(); len(idr) > 0 {
-						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
-					}
+					live.OnPLI(track)
 				}
 			}
 		}
@@ -379,11 +185,10 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 	case <-gather:
 	case <-time.After(100 * time.Millisecond):
 	}
-	rtcMu.Lock()
-	rtcNeedIDR = true
-	rtcMu.Unlock()
+	// Keep needKey armed until the next encoder IDR after this join.
+	live.RequestKey()
 	loc := pc.LocalDescription()
-	log.Printf("webrtc: answer %s", offerH264Lines(loc.SDP))
+	log.Printf("webrtc: answer ok")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(loc)
 }
