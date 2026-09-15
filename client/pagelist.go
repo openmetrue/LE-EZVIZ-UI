@@ -91,20 +91,6 @@ type DeviceInfos struct {
 	Tags                 *string `json:"tags"`
 }
 
-// GetStatusRaw returns the raw pagelist JSON with filter STATUS,WIFI.
-func (LEZ *LE_EZVIZ_Client) GetStatusRaw() (string, error) {
-	resp, err := LEZ.QueryEncodedAPIRequest("GET", api.V3_USERDEVICES_V1_RESOURCES_PAGELIST, USE_API_URL, map[string]string{"sessionId": *LEZ.LoginResponse.LoginSession.SessionId, "clientType": strconv.Itoa(LEZ.ClientType), "clientNo": LEZ.ClientNo, "clientVersion": "2,5,1,2109068", "groupId": "-1", "limit": "50", "offset": "0", "filter": "STATUS,WIFI"})
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(bodyBytes), nil
-}
-
 // DeviceStatus is a compact device status parsed from the cloud pagelist.
 type DeviceStatus struct {
 	Battery          string `json:"battery"`
@@ -113,14 +99,13 @@ type DeviceStatus struct {
 	WifiSSID         string `json:"wifi_ssid"`
 	PirStatus        int    `json:"pir"`
 	UpgradeAvailable int    `json:"upgrade_available"`
-	Cover            string `json:"cover,omitempty"`
 	KeepAliveSec     int    `json:"keep_alive_sec"`
 }
 
 // GetDeviceStatus reads STATUS and WIFI sections of pagelist.
 // This is a cloud API call — it does not start a stream, so a sleeping camera stays asleep.
 func (LEZ *LE_EZVIZ_Client) GetDeviceStatus(deviceSerial string) (*DeviceStatus, error) {
-	raw, err := LEZ.GetStatusRaw()
+	raw, err := LEZ.statusRawJSON()
 	if err != nil {
 		return nil, err
 	}
@@ -162,15 +147,20 @@ func (LEZ *LE_EZVIZ_Client) GetDeviceStatus(deviceSerial string) (*DeviceStatus,
 		ds.WifiSignal = w.Signal
 		ds.WifiSSID = w.SSID
 	}
-	if pl, err := LEZ.GetPageList(); err == nil && pl.ResourceInfos != nil {
-		for _, r := range *pl.ResourceInfos {
-			if r.DeviceSerial == deviceSerial && r.ResourceCover != "" {
-				ds.Cover = r.ResourceCover
-				break
-			}
-		}
-	}
 	return ds, nil
+}
+
+func (LEZ *LE_EZVIZ_Client) statusRawJSON() (string, error) {
+	resp, err := LEZ.QueryEncodedAPIRequest("GET", api.V3_USERDEVICES_V1_RESOURCES_PAGELIST, USE_API_URL, map[string]string{"sessionId": *LEZ.LoginResponse.LoginSession.SessionId, "clientType": strconv.Itoa(LEZ.ClientType), "clientNo": LEZ.ClientNo, "clientVersion": "2,5,1,2109068", "groupId": "-1", "limit": "50", "offset": "0", "filter": "STATUS,WIFI"})
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(bodyBytes), nil
 }
 
 // ToDo - add custom params

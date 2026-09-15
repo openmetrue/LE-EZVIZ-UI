@@ -256,26 +256,24 @@ func changeSitePassword(r *http.Request, lang string) string {
 	return `<p class="ok">` + esc(T(lang, "setup.pwOk")) + `</p>`
 }
 
-func streamModeSeg(lang, current string) string {
-	if current != "always" {
-		current = "on_demand"
-	}
-	return `<div class="seg">` + streamModeSegItem(lang, "on_demand", current) + streamModeSegItem(lang, "always", current) + `</div>`
-}
-
-func streamModeSegItem(lang, mode, current string) string {
-	on := mode == current
+func segForm(action, formName, field, value, label string, on bool) string {
 	cls, dis := "", ""
 	if on {
 		cls = ` class="on"`
 		dis = " disabled"
 	}
-	key := "setup.streamOnDemand"
-	if mode == "always" {
-		key = "setup.streamAlways"
+	return `<form method="post" action="` + action + `"><input type="hidden" name="form" value="` + formName + `"><input type="hidden" name="` + field + `" value="` + value + `"><button type="submit"` + cls + dis + `>` + label + `</button></form>`
+}
+
+func streamModeSeg(lang, current string) string {
+	if current != "always" {
+		current = "on_demand"
 	}
 	esc := template.HTMLEscapeString
-	return `<form method="post" action="#stream-mode"><input type="hidden" name="form" value="stream"><input type="hidden" name="mode" value="` + mode + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
+	return `<div class="seg">` +
+		segForm("#stream-mode", "stream", "mode", "on_demand", esc(T(lang, "setup.streamOnDemand")), current == "on_demand") +
+		segForm("#stream-mode", "stream", "mode", "always", esc(T(lang, "setup.streamAlways")), current == "always") +
+		`</div>`
 }
 
 func changeStreamMode(r *http.Request, lang string) string {
@@ -341,7 +339,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 </div>
 <p class="statusline" id="mode"></p>
 <script>
-`+webrtcPlayerJS("", true)+`
+`+webrtcPlayerJS("")+`
 const shareURL = "`+template.JSEscapeString(shareURL)+`";
 const t = `+string(jsT)+`;
 const bat = document.getElementById("bat");
@@ -401,7 +399,7 @@ func handleShare(w http.ResponseWriter, r *http.Request) {
 </div>
 <p class="statusline"><span id="bat"></span><span id="st"></span></p>
 <script>
-` + webrtcPlayerJS(token, true) + `
+` + webrtcPlayerJS(token) + `
 const t = ` + string(jsT) + `;
 const bat = document.getElementById("bat");
 </script>`
@@ -428,16 +426,13 @@ const bat = document.getElementById("bat");
 }
 
 // webrtcPlayerJS is the shared Live/Share WebRTC client. tokenQ is appended to API URLs.
-// withChrome enables battery/mode status fields used on the authenticated Live page.
-func webrtcPlayerJS(token string, withChrome bool) string {
+func webrtcPlayerJS(token string) string {
 	tokJS := template.JSEscapeString(token)
 	rtcJS := "false"
 	if rtcEnabled() {
 		rtcJS = "true"
 	}
-	chromePoll := ""
-	if withChrome {
-		chromePoll = `
+	chromePoll := `
     if (typeof bat !== "undefined" && s.device && s.device.battery) {
       const d = s.device;
       let line = t.battery + ": " + d.battery + "%";
@@ -448,7 +443,6 @@ func webrtcPlayerJS(token string, withChrome bool) string {
     }
     if (typeof modeEl !== "undefined" && modeEl) modeEl.textContent = s.stream_mode === "always" ? t.alwaysOn : "";
 `
-	}
 	return `const base = "` + *basePath + `";
 const token = "` + tokJS + `";
 const tokQ = token ? ("?token=" + encodeURIComponent(token)) : "";

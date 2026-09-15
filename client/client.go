@@ -152,32 +152,35 @@ func NewLE_EZVIZ_Client(email, password, region, featurecode, terminalname, clie
 	return LEZ, nil
 }
 
-func (LEZ *LE_EZVIZ_Client) FormURLEncodedAPIRequest(method, endpoint string, urltype int, formData map[string]string) (*http.Response, error) {
+func (LEZ *LE_EZVIZ_Client) baseURL(urltype int) (string, error) {
+	switch urltype {
+	case USE_API_URL:
+		return LEZ.API_URL, nil
+	case USE_DOM_URL:
+		return LEZ.DOM_URL, nil
+	case USE_AUTH_URL:
+		if LEZ.AUTH_URL == "" {
+			return "", errors.New("auth URL not initialised")
+		}
+		return LEZ.AUTH_URL, nil
+	default:
+		return "", errors.New("unknown url type")
+	}
+}
+
+func (LEZ *LE_EZVIZ_Client) doAPIRequest(method, endpoint string, urltype int, body io.Reader, query string) (*http.Response, error) {
 	switch method {
-	case "GET":
-	case "POST":
-	case "PATCH":
-	case "PUT":
-	case "DELETE":
-	case "OPTIONS":
-		break
+	case "GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS":
 	default:
 		return nil, errors.New("unknown http method")
 	}
-	encodedFormData := EncodeURLForm(formData)
-	baseURL := ""
-	switch urltype {
-	case USE_API_URL:
-		baseURL = LEZ.API_URL
-	case USE_DOM_URL:
-		baseURL = LEZ.DOM_URL
-	case USE_AUTH_URL:
-		baseURL = LEZ.AUTH_URL
-	default:
-		return nil, errors.New("unknown url type")
+	base, err := LEZ.baseURL(urltype)
+	if err != nil {
+		return nil, err
 	}
-	log.Debug("Request", zap.String("URL", baseURL+endpoint), zap.String("FormData", encodedFormData))
-	req, err := http.NewRequest(method, baseURL+endpoint, strings.NewReader(encodedFormData))
+	url := base + endpoint + query
+	log.Debug("Request", zap.String("URL", url))
+	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		log.Error("Error creating request", zap.Error(err))
 		return nil, err
@@ -193,64 +196,21 @@ func (LEZ *LE_EZVIZ_Client) FormURLEncodedAPIRequest(method, endpoint string, ur
 		log.Error("Status not ok", zap.Int("StatusCode", resp.StatusCode))
 		return nil, errors.New("http not ok")
 	}
-	// bodyBytes, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	log.Error("Error reading response body", zap.Error(err))
-	// 	return err
-	// }
 	return resp, nil
 }
 
+func (LEZ *LE_EZVIZ_Client) FormURLEncodedAPIRequest(method, endpoint string, urltype int, formData map[string]string) (*http.Response, error) {
+	encoded := encodeForm(formData)
+	log.Debug("FormData", zap.String("data", encoded))
+	return LEZ.doAPIRequest(method, endpoint, urltype, strings.NewReader(encoded), "")
+}
+
 func (LEZ *LE_EZVIZ_Client) QueryEncodedAPIRequest(method, endpoint string, urltype int, queryParams map[string]string) (*http.Response, error) {
-	switch method {
-	case "GET":
-	case "POST":
-	case "PATCH":
-	case "PUT":
-	case "DELETE":
-	case "OPTIONS":
-		break
-	default:
-		return nil, errors.New("unknown http method")
+	q := ""
+	if len(queryParams) > 0 {
+		q = "?" + encodeForm(queryParams)
 	}
-	encodedFormData := EncodeQuery(queryParams)
-	baseURL := ""
-	switch urltype {
-	case USE_API_URL:
-		baseURL = LEZ.API_URL
-	case USE_DOM_URL:
-		baseURL = LEZ.DOM_URL
-	case USE_AUTH_URL:
-		if LEZ.AUTH_URL == "" {
-			return nil, errors.New("auth URL not initialised")
-		}
-		baseURL = LEZ.AUTH_URL
-	default:
-		return nil, errors.New("unknown url type")
-	}
-	log.Debug("Request", zap.String("URL", baseURL+endpoint+encodedFormData))
-	req, err := http.NewRequest(method, baseURL+endpoint+encodedFormData, nil)
-	if err != nil {
-		log.Error("Error creating request", zap.Error(err))
-		return nil, err
-	}
-	LEZ.Headers["Content-Type"] = []string{"application/x-www-form-urlencoded"}
-	req.Header = LEZ.Headers
-	resp, err := LEZ.Client.Do(req)
-	if err != nil {
-		log.Error("Error sending request", zap.Error(err))
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Error("Status not ok", zap.Int("StatusCode", resp.StatusCode))
-		return nil, errors.New("http not ok")
-	}
-	// bodyBytes, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	log.Error("Error reading response body", zap.Error(err))
-	// 	return err
-	// }
-	return resp, nil
+	return LEZ.doAPIRequest(method, endpoint, urltype, nil, q)
 }
 
 func init() {
@@ -263,7 +223,6 @@ func init() {
 		Timeout: 15 * time.Second,
 		Jar:     jar,
 	}
-	// Disable redirects manually
 	Client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
@@ -281,16 +240,6 @@ func (LEZ *LE_EZVIZ_Client) V3_Login() (*V3_Auth_Login_Response, error) {
 		log.Error("Error reading response body", zap.Error(err))
 		return nil, err
 	}
-	var data map[string]interface{}
-	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(&data); err != nil {
-		log.Error("Error decoding JSON", zap.Error(err))
-		return nil, err
-	}
-	// fmt.Println("Parsed JSON:", data)
-	// fmt.Println("Response Status:", resp.Status)
-	// fmt.Println("Response Header:", resp.Header)
-	// fmt.Println("Response Body:", string(bodyBytes))
-	// fmt.Println("Response Cookies:", resp.Cookies())
 	LR := new(V3_Auth_Login_Response)
 	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(LR); err != nil {
 		log.Error("Error decoding JSON", zap.Error(err))
@@ -307,9 +256,8 @@ func (LEZ *LE_EZVIZ_Client) V3_Login() (*V3_Auth_Login_Response, error) {
 			log.Error("2FA is enabled, currently not supported but will be in a future update")
 		}
 		return nil, errors.New("api meta code not ok")
-	} else {
-		LEZ.Headers["sessionId"] = []string{*LR.LoginSession.SessionId}
-		LEZ.LoginResponse = LR
 	}
+	LEZ.Headers["sessionId"] = []string{*LR.LoginSession.SessionId}
+	LEZ.LoginResponse = LR
 	return LR, nil
 }

@@ -414,10 +414,10 @@ func signalHold(hold *exec.Cmd) {
 	}
 }
 
-func waitWhileActive(d time.Duration, ready func() bool) bool {
+func waitForPlayable(d time.Duration) bool {
 	deadline := time.Now().Add(d)
 	for {
-		if ready() {
+		if rtcPlayable() {
 			return true
 		}
 		if !time.Now().Before(deadline) || !streamer.Status().Active() {
@@ -425,8 +425,4 @@ func waitWhileActive(d time.Duration, ready func() bool) bool {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-}
-
-func waitForPlayable(d time.Duration) bool {
-	return waitWhileActive(d, rtcPlayable)
 }

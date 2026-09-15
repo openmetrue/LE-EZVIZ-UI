@@ -10,48 +10,30 @@ import (
 	"go.uber.org/zap"
 )
 
-// Load featurecode from file, to note it is a random md5 hash and doesn't have much importance
-// it is also known as hardwarecode, its name varies within API usage but is the same
-func (LEZ *LE_EZVIZ_Client) LoadFeatureCode(featurecodepath string) string {
-	f, err := os.Open(featurecodepath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			f, err := os.Create("featurecode")
-			if err != nil {
-				log.Error("Error creating featurecode file, creating in memory", zap.Error(err))
-			} else {
-				hash := GenerateFeatureCode()
-				f.Write([]byte(hex.EncodeToString(hash[:])))
-				f.Sync()
-				f.Close()
-				LEZ.FeatureCode = string(hex.EncodeToString(hash[:]))
-				LEZ.Headers["featureCode"] = []string{LEZ.FeatureCode}
-				return hex.EncodeToString(hash[:])
-			}
-			hash := GenerateFeatureCode()
-			LEZ.FeatureCode = string(hex.EncodeToString(hash[:]))
-			LEZ.Headers["featureCode"] = []string{LEZ.FeatureCode}
-			return hex.EncodeToString(hash[:])
-		}
+// LoadFeatureCode reads a stable 32-hex hardware id from disk (or creates one).
+func (LEZ *LE_EZVIZ_Client) LoadFeatureCode(path string) string {
+	if b, err := os.ReadFile(path); err == nil && len(b) == 32 {
+		return LEZ.applyFeatureCode(string(b))
 	}
-	featurebytes, err := io.ReadAll(f)
-	if err != nil {
-		log.Error("Error reading featurecode from file, creating in memory", zap.Error(err))
-		hash := GenerateFeatureCode()
-		LEZ.FeatureCode = string(hex.EncodeToString(hash[:]))
-		LEZ.Headers["featureCode"] = []string{LEZ.FeatureCode}
-		return hex.EncodeToString(hash[:])
+	code := hex.EncodeToString(GenerateFeatureCode())
+	if err := os.WriteFile(path, []byte(code), 0o644); err != nil {
+		log.Error("Error writing featurecode file, using in-memory", zap.Error(err))
 	}
-	if len(featurebytes) != 32 {
-		log.Error("featurecode byte length is incorrect, creating in memory", zap.Error(err))
-		hash := GenerateFeatureCode()
-		LEZ.FeatureCode = string(hex.EncodeToString(hash[:]))
-		LEZ.Headers["featureCode"] = []string{LEZ.FeatureCode}
-		return hex.EncodeToString(hash[:])
+	return LEZ.applyFeatureCode(code)
+}
+
+func (LEZ *LE_EZVIZ_Client) SetFeatureCode(code string) {
+	if len(code) != 32 {
+		log.Info("featurecode must be 32 bytes")
+		code = hex.EncodeToString(GenerateFeatureCode())
 	}
-	LEZ.FeatureCode = string(featurebytes)
-	LEZ.Headers["featureCode"] = []string{LEZ.FeatureCode}
-	return LEZ.FeatureCode
+	LEZ.applyFeatureCode(code)
+}
+
+func (LEZ *LE_EZVIZ_Client) applyFeatureCode(code string) string {
+	LEZ.FeatureCode = code
+	LEZ.Headers["featureCode"] = []string{code}
+	return code
 }
 
 func GetMd5(text string) string {
@@ -61,16 +43,7 @@ func GetMd5(text string) string {
 
 func GenerateFeatureCode() []byte {
 	randomBytes := make([]byte, 16)
-	rand.Read(randomBytes)
+	_, _ = io.ReadFull(rand.Reader, randomBytes)
 	hash := md5.Sum(randomBytes)
 	return hash[:]
-}
-
-func (LEZ *LE_EZVIZ_Client) SetFeatureCode(code string) {
-	if len(code) != 32 {
-		log.Info("featurecode must be 32 bytes")
-		LEZ.FeatureCode = string(GenerateFeatureCode())
-	}
-	LEZ.FeatureCode = code
-	LEZ.Headers["featureCode"] = []string{code}
 }

@@ -155,21 +155,9 @@ func (LEZ *LE_EZVIZ_Client) DecodeRTP(buf []byte) ([]byte, error) {
 	return nil, nil
 }
 
-// Currently unsure whether to replace or append the start code
-// Added both so we can mess around with the stream
-
-// AVCStartCode/NAL we replace the first four bytes after we check it is H264/H265
-func ReplaceAVCStartCode(buf []byte) []byte {
-	buf[0] = 0
-	buf[1] = 0
-	buf[2] = 0
-	buf[3] = 1
-	return buf
-}
-
 func AppendAVCStartCode(buf []byte) []byte {
 	avc := make([]byte, 0, len(buf)+4)
-	avc = append(avc, []byte{0, 0, 0, 1}...)
+	avc = append(avc, 0, 0, 0, 1)
 	avc = append(avc, buf...)
 	return avc
 }

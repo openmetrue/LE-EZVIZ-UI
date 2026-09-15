@@ -74,32 +74,28 @@ curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/in
 
 That is documented in the root `readme.md`. Manual copy (`make linux` → `/opt/ezvizd/`) still works.
 
-Data lives in `/var/lib/ezvizd` (`hls/`, `recordings/`, `stats.json`, logs). Config is `/opt/ezvizd/config.json` (mode `600`, contains the EZVIZ password — keep it off git). Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`). Open the site once: set the **site** password, then EZVIZ email / password / serial.
+Data lives in `/var/lib/ezvizd` (`recordings/`, `stats.json`, logs). Config is `/opt/ezvizd/config.json` (mode `600`, contains the EZVIZ password — keep it off git). Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`). Open the site once: set the **site** password, then EZVIZ email / password / serial.
 
 ## Battery / stream notes
 
 - Cloud login (`-statusOnly`) does **not** wake the camera. Starting VTDU does.
 - EZVIZ drops video for battery cams after ~180s even if keepalive is fine. The client reconnects at 170s (`-maxStreamTime`).
-- After a VTDU reconnect, PTS resets. Live ffmpeg uses `setts=pts=N/(15*TB)` so the muxer does not drop the new session. Recordings use the same filter when concatenating HLS.
+- Live is WebRTC H.264 (720p re-encode). Save remuxes the original camera MPEG-PS (full-res HEVC) from a short ring buffer.
 - Client logs at Info. Debug logs every packet (~45 MB/day) and session URLs.
 
 ## Token URL
 
-After setup, **Share** copies:
-
-`https://your.domain/ezviz/hls/live.m3u8?token=…`
-
-Anyone with that link can start the stream (no site password). Treat it like a password.
+After setup, **Share** copies a token URL for Live (no site password). Treat it like a password.
 
 ## Patches on upstream LE-EZVIZ-VS
 
 Applied on top of upstream files (not a wholesale replace):
 
-- `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly` / `-statusRaw`, `-maxStreamTime`, reconnect loop; warnings on stderr so they do not corrupt the stream.
+- `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly`, `-maxStreamTime`, reconnect loop; warnings on stderr so they do not corrupt the stream.
 - `logging/log.go` — InfoLevel instead of Debug.
 - `client/client.go` — `SetLogger`, `PipeMode`, `StreamOut`.
-- `client/vtdu.go` — write to stdout in pipe mode; `io.ReadFull`; reconnect on header desync; skip ffmpeg re-encode in pipe mode; keepalive via zap Debug.
-- `client/pagelist.go` — `GetStatusRaw`, `DeviceStatus`, `GetDeviceStatus` (original `GetPageList` unchanged).
+- `client/vtdu.go` — write to stdout/FIFO in pipe mode; `io.ReadFull`; reconnect on header desync; keepalive via zap Debug.
+- `client/pagelist.go` — `DeviceStatus`, `GetDeviceStatus` (original `GetPageList` unchanged).
 
 ## Lineage
 

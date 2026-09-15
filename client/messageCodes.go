@@ -1,7 +1,5 @@
 package client
 
-type MessageCode uint16
-
 const (
 	MSG_SIGNAL_MSG_TYPE_IDLE         = 0x00
 	MSG_GET_VTDUINDO_REQ             = 0x12c

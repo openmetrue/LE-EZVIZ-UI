@@ -6,7 +6,7 @@ A web interface for EZVIZ cameras that do not expose local RTSP. Built on [LE-EZ
 
 EZVIZ HP2 and similar devices do not provide a local RTSP endpoint. Live video is available only through the official mobile application. Time from launching the app to a usable frame is ~15 seconds: splash screen, device list, then a second confirmation to start viewing.
 
-Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand HLS, site authentication, a recording archive, and battery history.
+Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand WebRTC Live, site authentication, a recording archive, and battery history.
 
 ![Live player demo](demo.gif)
 

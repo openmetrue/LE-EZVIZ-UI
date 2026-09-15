@@ -25,9 +25,7 @@ var deviceSerial = flag.String("deviceSerial", "", "The device serial you want t
 var out = flag.String("out", "stream", "Where to write the raw stream: file path or - for stdout (pipe mode, logs go to lez.log)")
 var statusOnly = flag.Bool("statusOnly", false, "Print device status as JSON to stdout and exit (no stream, camera stays asleep)")
 var maxStreamTime = flag.Int("maxStreamTime", 0, "If >0, proactively reconnect the VTDU stream every N seconds (keeps battery cameras awake past their KeepAlive limit)")
-var statusRaw = flag.Bool("statusRaw", false, "Print raw STATUS,WIFI pagelist JSON to stdout and exit (debug)")
 var idleWait = flag.Bool("idleWait", false, "Stay logged in; wait for a newline on stdin before each stream, SIGUSR1 ends the current stream")
-var preserveSession = flag.Bool("preserveSession", false, "Preserve session token") //TBD
 var stdout = flag.Bool("stdout", true, "Print log to the terminal")
 var logFile = flag.Bool("logFile", true, "Print log to lez.log")
 var logLevel = flag.String("logLevel", "info", "Log level: debug, info, warn, error")
@@ -48,13 +46,12 @@ func main() {
 	if *password == "" {
 		panic("password empty")
 	}
-	if *out == "-" || *statusOnly || *statusRaw || *idleWait {
+	if *out == "-" || *statusOnly || *idleWait {
 		*stdout = false
 		*logFile = true
 	}
 	logging.CreateLogger(*logFile, *stdout, *logLevel)
 	client.SetLogger(logging.Log)
-	client.CurrentRegion = *region
 	client.TerminalName = *terminalName
 	log = logging.Log
 	if _, ok := client.Regions[*region]; !ok {
@@ -77,15 +74,6 @@ func main() {
 	}
 	if _, err = LEZ.V3_Login(); err != nil {
 		panic(err)
-	}
-	if *statusRaw {
-		raw, err := LEZ.GetStatusRaw()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "status query failed:", err)
-			os.Exit(1)
-		}
-		fmt.Println(raw)
-		return
 	}
 	if *statusOnly {
 		ds, err := LEZ.GetDeviceStatus(*deviceSerial)
@@ -112,7 +100,6 @@ func main() {
 	for _, v := range *PageList.DeviceInfos {
 		log.Info(v.Name, zap.String("Serial", v.DeviceSerial))
 	}
-	// fmt.Println(PageList.VTM)
 	fmt.Fprintln(os.Stderr, "!!!WARNING: This library is in beta, only use for development/testing until it is stable, things will change as development continues!!!")
 	fmt.Fprintln(os.Stderr, "!!!Encryption is not yet available including E2EE with stream servers, your streams will be unencrypted until encryption is implemented!!!")
 	if *deviceSerial != "" {

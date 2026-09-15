@@ -8,9 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	ffmpeg "github.com/u2takey/ffmpeg-go"
 	"go.uber.org/zap"
-	"golang.org/x/sync/errgroup"
 )
 
 type VTDUStream struct {
@@ -22,7 +20,6 @@ type VTDUStream struct {
 	VTMStreamKey  string
 	SessionKey    string
 	MasterKey     string
-	Codec         int
 	Transport     int
 }
 
@@ -37,6 +34,21 @@ func (LEZ *LE_EZVIZ_Client) ConnectVTDU(vtduIP string, vtduPort int, vtmStreamKe
 	return VS, nil
 }
 
+func (LEZ *LE_EZVIZ_Client) streamWriter() (io.Writer, func(), error) {
+	if LEZ.PipeMode {
+		return LEZ.StreamOut, func() {}, nil
+	}
+	path := LEZ.StreamFile
+	if path == "" {
+		path = "stream"
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, func() { _ = f.Close() }, nil
+}
+
 func (LEZ *LE_EZVIZ_Client) StartVTDUStream(VTDUstream *VTDUStream, StreamURL string) error {
 	StreamReq, err := CreateStreamInfoReq(StreamURL, VTDUstream.VTMStreamKey)
 	if err != nil {
@@ -45,9 +57,7 @@ func (LEZ *LE_EZVIZ_Client) StartVTDUStream(VTDUstream *VTDUStream, StreamURL st
 	}
 	EncodedPacket := EncodeVTMPacket(*StreamReq, CHAN_MSG, MSG_STREAMINFO_REQ)
 	log.Sugar().Debugf("bytes: %x", EncodedPacket)
-	// return nil
-	_, err = VTDUstream.Conn.Write(EncodedPacket)
-	if err != nil {
+	if _, err = VTDUstream.Conn.Write(EncodedPacket); err != nil {
 		log.Error("Error writing to TCP sock", zap.Error(err))
 		return err
 	}
@@ -70,171 +80,90 @@ func (LEZ *LE_EZVIZ_Client) StartVTDUStream(VTDUstream *VTDUStream, StreamURL st
 		log.Error("Error reading from TCP sock", zap.Error(err))
 		return err
 	}
-	if Msg == MSG_STREAMINFO_RSP {
-		log.Debug("0x13c recieved StreamInfoRsp")
-		log.Sugar().Debugf("RspBytes:%x", Packet.Body)
-		Rsp, err := ParseStreamInfoRsp(Packet.Body)
+	log.Debug("0x13c received StreamInfoRsp")
+	log.Sugar().Debugf("RspBytes:%x", Packet.Body)
+	Rsp, err := ParseStreamInfoRsp(Packet.Body)
+	if err != nil {
+		log.Error("Closing VTDU Stream, error on StreamInfoRsp", zap.Error(err))
+		return err
+	}
+	if Rsp.Result == nil {
+		return errors.New("Result is nil")
+	}
+	if *Rsp.Result != 0 {
+		return LEZ.CheckRetcode(*Rsp.Result)
+	}
+	if Rsp.Streamssn == nil {
+		return errors.New("Streamssn nil")
+	}
+	if err = SendKeepAlive(VTDUstream.Conn, *Rsp.Streamssn); err != nil {
+		log.Error("Error sending keepalive to VTDU", zap.Error(err))
+		return err
+	}
+
+	streamFile, closeOut, err := LEZ.streamWriter()
+	if err != nil {
+		return err
+	}
+	defer closeOut()
+
+	go CreateKeepAliveTicker(VTDUstream.Conn, *Rsp.Streamssn)
+	gotMedia := false
+	for {
+		Packet := new(VTMPacket)
+		Packet.Header = make([]byte, 8)
+		_ = VTDUstream.Conn.SetReadDeadline(time.Now().Add(15 * time.Second))
+		if _, err = io.ReadFull(VTDUstream.Conn, Packet.Header); err != nil {
+			log.Error("Error reading from TCP sock", zap.Error(err))
+			return err
+		}
+		Len, Chan, Seq, Msg, err := Packet.DecodeHeader()
 		if err != nil {
-			log.Error("Closing VTDU Stream, error on StreamInfoRsp", zap.Error(err))
+			log.Error("Header decode failed, reconnecting", zap.Error(err))
 			return err
 		}
-		log.Debug("StreamInfoResponse", zap.Int32p("Result", Rsp.Result),
-			zap.Int32p("datakey", Rsp.Datakey),
-			zap.Stringp("StreamHead", Rsp.Streamhead),
-			zap.Stringp("StreamSSN", Rsp.Streamssn),
-			zap.Stringp("VTMStreamKey", Rsp.Vtmstreamkey),
-			zap.Stringp("ServerInfo", Rsp.Serverinfo),
-			zap.Stringp("StreamURl", Rsp.Streamurl),
-			zap.Stringp("SrvInfo", Rsp.Srvinfo),
-			zap.Stringp("AesMD5", Rsp.Aesmd5),
-			zap.Stringp("UDPtransinfo", Rsp.Udptransinfo),
-			zap.Stringp("Peerpbkey", Rsp.Peerpbkey),
-		)
-		log.Sugar().Info("PDS", Rsp.Pdslist)
-		if Rsp.Result == nil {
-			return errors.New("Result is nil")
-		}
-		if *Rsp.Result != 0 {
-			err := LEZ.CheckRetcode(*Rsp.Result)
+		log.Debug("Sequence", zap.Uint16("Seq", Seq))
+		Packet.Body = make([]byte, Len)
+		if _, err = io.ReadFull(VTDUstream.Conn, Packet.Body); err != nil {
+			log.Error("Error reading body from TCP sock", zap.Error(err))
 			return err
 		}
-		if Rsp.Streamssn == nil {
-			return errors.New("Streamssn nil")
+		if Msg == MSG_KEEPALIVE_RSP {
+			log.Debug("Keepalive responded")
+			continue
 		}
-		err = SendKeepAlive(VTDUstream.Conn, *Rsp.Streamssn)
-		if err != nil {
-			log.Error("Error sending keepalive to VTDU", zap.Error(err))
-			return err
-		}
-		log.Debug("Print first 64 bytes of packets as an example, further handling is needed. I believe these are like RTSP interleaved packets over TCP")
-		rawPath := LEZ.StreamFile
-		if rawPath == "" {
-			rawPath = "stream"
-		}
-		var streamFile io.Writer
-		if LEZ.PipeMode {
-			streamFile = LEZ.StreamOut
-		} else {
-			f, err := os.Create(rawPath)
-			if err != nil {
-				panic(err)
+		if Chan == CHAN_STREAM {
+			if VTDUstream.Transport == TRANS_UNKNOWN {
+				VTDUstream.Transport = DetectTransport(Packet.Body)
 			}
-			streamFile = f
-		}
-		// rtpStreamFile, err := os.Create("rtp_stream")
-		// if err != nil {
-		// 	panic(err)
-		// }
-		go CreateKeepAliveTicker(VTDUstream.Conn, *Rsp.Streamssn)
-		// var Packets = make([]VTMPacket, 0, 1600)
-		var ATD bool
-		for {
-			Packet := new(VTMPacket)
-			Packet.Header = make([]byte, 8)
-			VTDUstream.Conn.SetReadDeadline(time.Now().Add(time.Second * 15))
-			if _, err = io.ReadFull(VTDUstream.Conn, Packet.Header); err != nil {
-				log.Error("Error reading from TCP sock", zap.Error(err))
-				return err
-			}
-			Len, Chan, Seq, Msg, err := Packet.DecodeHeader()
-			if err != nil {
-				// Any header desync corrupts the stream; better to reconnect than to
-				// write garbage into the PS output (shows up as green macroblocks).
-				log.Error("Header decode failed, reconnecting", zap.Error(err))
-				return err
-			}
-			log.Debug("Sequence", zap.Uint16("Seq", Seq))
-			if Chan == 0x00 {
-				log.Debug("Message channel Msgcode", zap.Uint16("code", Msg))
-			}
-			if Chan == 0x01 {
-				log.Debug("Stream channel Msgcode", zap.Uint16("code", Msg))
-			}
-			if Msg == MSG_KEEPALIVE_RSP {
-				log.Debug("Keepalive responded")
-			}
-			Packet.Body = make([]byte, Len)
-			if _, err = io.ReadFull(VTDUstream.Conn, Packet.Body); err != nil {
-				log.Error("Error reading body from TCP sock", zap.Error(err))
-				return err
-			}
-			if Msg == MSG_KEEPALIVE_RSP {
-				log.Sugar().Debugf("KA RSP: %x", Packet.Body)
-			}
-			if Chan == 0x01 {
-				if VTDUstream.Transport == TRANS_UNKNOWN {
-					VTDUstream.Transport = DetectTransport(Packet.Body)
-				}
-				if VTDUstream.Transport == TRANS_MPEG_PS {
-					log.Debug("Transport is MPEG-PS")
-					ATD = true
-					// Find MPEG-PS, still under work
-					// PS := FindPSwithinbuffer(Packet.Body)
-					// if PS != nil {
-					// }
-					// Save packets to PACKS/ - not done so ignore this
-					// Packets = append(Packets, *Packet)
-					// if len(Packets) >= 1600 {
-					// 	err := os.Mkdir("PACKS", os.ModeDir)
-					// 	if err != nil {
-					// 		panic(err)
-					// 	}
-					// }
-					_, err := streamFile.Write(Packet.Body)
-					if err != nil {
-						panic(err)
-					}
-				}
-				if VTDUstream.Transport == TRANS_RTP {
-					log.Debug("Transport is RTP, this is still WIP, H.265 works")
-					ATD = true
-					// rtpStreamFile.Write(Packet.Body)
-					Payload, err := LEZ.DecodeRTP(Packet.Body)
-					if err != nil {
-						log.Error("Error decoding RTP", zap.Error(err))
-					}
-					_, err = streamFile.Write(Payload)
-					if err != nil {
-						panic(err)
-					}
-				}
-			}
-			if Chan == 0x00 && Seq == 0x00 && Msg != MSG_KEEPALIVE_RSP && ATD {
-				if LEZ.PipeMode {
-					log.Info("Stream ended by server (pipe mode), returning so caller can reconnect")
-					return nil
-				}
-				log.Info("Attempting ffmpeg re-encode to mp4")
-				var eg errgroup.Group
-				stream := ffmpeg.Input(rawPath).
-					Output("stream.mp4", ffmpeg.KwArgs{
-						"vcodec": "copy",
-						"f":      "mp4",
-					})
-				eg.Go(func() error {
-					return stream.OverWriteOutput().Run()
-				})
-				if err := eg.Wait(); err != nil {
-					log.Error("Error ffo: ", zap.Error(err))
+			switch VTDUstream.Transport {
+			case TRANS_MPEG_PS:
+				gotMedia = true
+				if _, err := streamFile.Write(Packet.Body); err != nil {
 					return err
 				}
-				return nil
+			case TRANS_RTP:
+				gotMedia = true
+				payload, err := LEZ.DecodeRTP(Packet.Body)
+				if err != nil {
+					log.Error("Error decoding RTP", zap.Error(err))
+					continue
+				}
+				if len(payload) == 0 {
+					continue
+				}
+				if _, err = streamFile.Write(payload); err != nil {
+					return err
+				}
 			}
-			if len(Packet.Body) > 64 {
-				log.Sugar().Debugf("packet header 64b in hex: %x", Packet.Header)
-				log.Sugar().Debugf("packet 64b in hex: %x", Packet.Body[:64])
-			} else {
-				log.Sugar().Debugf("whole packet in hex: %x", Packet.Body)
-			}
+			continue
 		}
-		// streamFile.Sync()
-		// streamFile.Close()
-	} else {
-		log.Error("Closing connection invalid sequence of messages", zap.Uint16("Recieved", Msg), zap.Uint16("Expected", MSG_STREAMINFO_RSP))
-		VTDUstream.Conn.Close()
-		return errors.New("invalid message code sequence")
+		// Control channel after media: server ended the stream.
+		if Chan == CHAN_MSG && Seq == 0 && gotMedia {
+			log.Info("Stream ended by server")
+			return nil
+		}
 	}
-	return nil
 }
 
 func SendKeepAlive(Sock net.Conn, StreamSSN string) error {
@@ -242,25 +171,18 @@ func SendKeepAlive(Sock net.Conn, StreamSSN string) error {
 	if err != nil {
 		return err
 	}
-	EncodedPacket := EncodeVTMPacket(*bytes, CHAN_MSG, MSG_KEEPALIVE_REQ)
-	_, err = Sock.Write(EncodedPacket)
-	if err != nil {
-		return err
-	}
-	return nil
+	_, err = Sock.Write(EncodeVTMPacket(*bytes, CHAN_MSG, MSG_KEEPALIVE_REQ))
+	return err
 }
 
 func CreateKeepAliveTicker(Sock net.Conn, StreamSSN string) {
-	SendKeepAlive(Sock, StreamSSN)
+	_ = SendKeepAlive(Sock, StreamSSN)
 	ticker := time.NewTicker(10 * time.Second)
-	for t := range ticker.C {
-		log.Debug("Sending Keep Alive", zap.Time("at", t))
-		err := SendKeepAlive(Sock, StreamSSN)
-		if err != nil {
-			ticker.Stop()
+	defer ticker.Stop()
+	for range ticker.C {
+		if err := SendKeepAlive(Sock, StreamSSN); err != nil {
 			log.Error("Error sending keep alive", zap.Error(err))
 			return
 		}
 	}
-	ticker.Stop()
 }

@@ -155,20 +155,11 @@ func handleStatsAPI(w http.ResponseWriter, r *http.Request) {
 
 func batteryPollSeg(lang string, current int) string {
 	esc := template.HTMLEscapeString
-	item := func(m int, key string) string {
-		on := m == current
-		cls, dis := "", ""
-		if on {
-			cls = ` class="on"`
-			dis = " disabled"
-		}
-		return `<form method="post" action="#battery-poll"><input type="hidden" name="form" value="poll"><input type="hidden" name="min" value="` + strconv.Itoa(m) + `"><button type="submit"` + cls + dis + `>` + esc(T(lang, key)) + `</button></form>`
-	}
 	return `<div class="seg">` +
-		item(5, "stats.poll5") +
-		item(15, "stats.poll15") +
-		item(30, "stats.poll30") +
-		item(60, "stats.poll60") +
+		segForm("#battery-poll", "poll", "min", "5", esc(T(lang, "stats.poll5")), current == 5) +
+		segForm("#battery-poll", "poll", "min", "15", esc(T(lang, "stats.poll15")), current == 15) +
+		segForm("#battery-poll", "poll", "min", "30", esc(T(lang, "stats.poll30")), current == 30) +
+		segForm("#battery-poll", "poll", "min", "60", esc(T(lang, "stats.poll60")), current == 60) +
 		`</div>`
 }
 
