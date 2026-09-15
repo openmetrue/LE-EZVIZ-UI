@@ -13,6 +13,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const sessionTTL = 365 * 24 * time.Hour
+
 func sessionValue(expiry time.Time) string {
 	exp := fmt.Sprintf("%d", expiry.Unix())
 	mac := hmac.New(sha256.New, []byte(cfgCopy().SessionSecret))
@@ -44,10 +46,13 @@ func validToken(r *http.Request) bool {
 }
 
 func setSession(w http.ResponseWriter) {
+	exp := time.Now().Add(sessionTTL)
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
-		Value:    sessionValue(time.Now().Add(30 * 24 * time.Hour)),
+		Value:    sessionValue(exp),
 		Path:     *basePath + "/",
+		MaxAge:   int(sessionTTL / time.Second),
+		Expires:  exp,
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
@@ -110,6 +115,10 @@ func auth(next http.HandlerFunc) http.HandlerFunc {
 		if !validSession(r) {
 			http.Redirect(w, r, *basePath+"/login", http.StatusSeeOther)
 			return
+		}
+		// Persist and slide the cookie on real page views, not /start or /api polls.
+		if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, *basePath+"/api/") {
+			setSession(w)
 		}
 		next(w, r)
 	}

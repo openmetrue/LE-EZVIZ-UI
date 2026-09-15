@@ -304,6 +304,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	streamer.Touch()
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
 	shareURL := publicOrigin(r) + *basePath + "/hls/" + playlistName + "?token=" + cfgCopy().DeviceToken
@@ -524,6 +525,13 @@ func livePlaylist(data []byte, token string) []byte {
 	s := string(data)
 	if strings.Contains(s, "#EXT-X-TARGETDURATION:0") {
 		s = strings.Replace(s, "#EXT-X-TARGETDURATION:0", "#EXT-X-TARGETDURATION:1", 1)
+	}
+	// Safari live HLS otherwise buffers ~3 segments (~+3s) before the first
+	// paint. Only while the window is still short — a long playlist should
+	// stay at the live edge.
+	n := len(playlistSegments([]byte(s)))
+	if n > 0 && n <= 3 && !strings.Contains(s, "#EXT-X-START:") {
+		s = strings.Replace(s, "#EXTM3U\n", "#EXTM3U\n#EXT-X-START:TIME-OFFSET=0,PRECISE=YES\n", 1)
 	}
 	return []byte(s)
 }

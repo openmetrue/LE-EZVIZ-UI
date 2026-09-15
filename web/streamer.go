@@ -309,6 +309,11 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		}
 	}
 	log.Printf("streamer: started (run #%d)", s.restarts)
+	go func(run int, t0 time.Time) {
+		if waitForPlayable(20 * time.Second) {
+			log.Printf("streamer: first HLS after %s (run #%d)", time.Since(t0).Round(10*time.Millisecond), run)
+		}
+	}(s.restarts, s.startedAt)
 
 	done := make(chan error, 1)
 	go func() { done <- ff.Wait() }()
