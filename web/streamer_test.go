@@ -1,29 +1,10 @@
 package main
 
 import (
-	"errors"
 	"strings"
 	"testing"
 	"time"
 )
-
-func TestWaitBothAfterOneReceive(t *testing.T) {
-	done := make(chan error, 2)
-	done <- errors.New("remaining")
-	waitBoth(done, 1)
-	select {
-	case <-done:
-		t.Fatal("waitBoth drained more than the remaining Wait")
-	default:
-	}
-}
-
-func TestWaitBothFromScratch(t *testing.T) {
-	done := make(chan error, 2)
-	done <- nil
-	done <- nil
-	waitBoth(done, 0)
-}
 
 func TestWantedAlwaysOn(t *testing.T) {
 	orig := cfg
@@ -82,25 +63,6 @@ func TestKickDoesNotCountAsViewer(t *testing.T) {
 	}
 }
 
-func TestWaitBothDoesNotHang(t *testing.T) {
-	done := make(chan error, 2)
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		done <- errors.New("a")
-		done <- errors.New("b")
-	}()
-	finished := make(chan struct{})
-	go func() {
-		waitBoth(done, 0)
-		close(finished)
-	}()
-	select {
-	case <-finished:
-	case <-time.After(time.Second):
-		t.Fatal("waitBoth hung")
-	}
-}
-
 func TestLivePlaylistFixesZeroDuration(t *testing.T) {
 	in := []byte("#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:0\n#EXTINF:1,\nlive0.m4s\n")
 	out := string(livePlaylist(in, ""))
@@ -109,5 +71,22 @@ func TestLivePlaylistFixesZeroDuration(t *testing.T) {
 	}
 	if !strings.Contains(out, "#EXT-X-TARGETDURATION:1") {
 		t.Fatal(out)
+	}
+}
+
+func TestPlaylistSegments(t *testing.T) {
+	in := []byte("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1,\nlive0.m4s\n#EXTINF:1,\nlive1.m4s?token=x\n")
+	got := playlistSegments(in)
+	if len(got) != 2 || got[0] != "live0.m4s" || got[1] != "live1.m4s" {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestStreamStatusActive(t *testing.T) {
+	if (StreamStatus{}).Active() {
+		t.Fatal("zero status should be inactive")
+	}
+	if !(StreamStatus{Running: true}).Active() || !(StreamStatus{Starting: true}).Active() {
+		t.Fatal("running or starting should be active")
 	}
 }

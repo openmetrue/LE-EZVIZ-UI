@@ -29,7 +29,7 @@ type VTDUStream struct {
 func (LEZ *LE_EZVIZ_Client) ConnectVTDU(vtduIP string, vtduPort int, vtmStreamKey, vtmPublicKey string) (*VTDUStream, error) {
 	sock, err := dialTCP(vtduIP + ":" + strconv.Itoa(vtduPort))
 	if err != nil {
-		log.Error("Error dialing VTM", zap.Error(err))
+		log.Error("Error dialing VTDU", zap.Error(err))
 		return nil, err
 	}
 	VS := &VTDUStream{Conn: sock, VTDUIP: vtduIP, VTDUPort: vtduPort, VTMStreamKey: vtmStreamKey, VTMPublicKey: vtmPublicKey}

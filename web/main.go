@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -28,8 +27,8 @@ func main() {
 	if err := loadConfig(); err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(*workDir, "hls"), 0o755); err != nil {
-		log.Fatalf("workdir: %v", err)
+	if err := os.MkdirAll(hlsDir(), 0o755); err != nil {
+		log.Fatalf("hlsdir: %v", err)
 	}
 	streamer = NewStreamer()
 	devStatusLoad()

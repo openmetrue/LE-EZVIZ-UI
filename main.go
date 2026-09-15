@@ -258,12 +258,15 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 		t0 := time.Now()
 		LEZ.DropConns()
 		usedWarm := warm != nil
-		VS, err := tokenAndVTM(LEZ, v, RI, DI, warm)
-		if err != nil {
+		fail := func(err error) error {
 			if fifo == nil {
 				unblockFifoWriter()
 			}
 			return err
+		}
+		VS, err := tokenAndVTM(LEZ, v, RI, DI, warm)
+		if err != nil {
+			return fail(err)
 		}
 		Tokens := *LEZ.VTDUTokens.Tokens
 		URL := LEZ.BuildVtmUrl(VS.VTMIP, VS.VTMPort, RI.DeviceSerial, RI.StreamBizUrl, Tokens[0], DI.ChannelNumber, LEZ.ClientType)
@@ -275,27 +278,18 @@ func startDeviceStream(LEZ *client.LE_EZVIZ_Client, v client.VTMResource, RI cli
 				warm = nil
 				continue
 			}
-			if fifo == nil {
-				unblockFifoWriter()
-			}
-			return err
+			return fail(err)
 		}
 		vtmAt := time.Since(t0)
 		IP, Port, _, _, err := LEZ.ParseVtmUrl(*RStreamInfoRsp.Streamurl)
 		if err != nil {
 			VS.Conn.Close()
-			if fifo == nil {
-				unblockFifoWriter()
-			}
-			return err
+			return fail(err)
 		}
 		VTDUStream, err := LEZ.ConnectVTDU(IP, Port, *RStreamInfoRsp.Vtmstreamkey, v.PublicKey.Key)
 		if err != nil {
 			VS.Conn.Close()
-			if fifo == nil {
-				unblockFifoWriter()
-			}
-			return err
+			return fail(err)
 		}
 		if fifo == nil && *idleWait && *out != "" && *out != "-" {
 			f, err := os.OpenFile(*out, os.O_WRONLY, 0)

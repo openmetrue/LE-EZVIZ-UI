@@ -33,8 +33,6 @@ type Streamer struct {
 
 func NewStreamer() *Streamer { return &Streamer{} }
 
-func fifoPath() string { return filepath.Join(*workDir, "stream.ps") }
-
 func (s *Streamer) Touch() {
 	s.mu.Lock()
 	s.lastTouch = time.Now()
@@ -75,25 +73,18 @@ func (s *Streamer) ensureHold(email, password, serial, region string) error {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil && !os.IsExist(err) {
 		return err
 	}
-	cmd := exec.Command(*bridgePath,
-		"-region", region,
-		"-deviceSerial", serial,
+	cmd := exec.Command(*bridgePath, bridgeArgv(region, serial,
 		"-maxStreamTime", "170",
-		"-logLevel", bridgeLogLevel(),
 		"-out", fifo,
 		"-idleWait",
-		"-stdout=false", "-logFile=true")
-	cmd.Dir = *workDir
-	cmd.Env = append(os.Environ(),
-		"EZVIZ_EMAIL="+email,
-		"EZVIZ_PASSWORD="+password,
-	)
+		"-stdout=false", "-logFile=true")...)
+	applyBridgeEnv(cmd, email, password)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
 	var errFile *os.File
-	if f, err := os.OpenFile(filepath.Join(*workDir, "bridge.err"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+	if f, err := os.OpenFile(bridgeErrPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		cmd.Stderr = f
 		errFile = f
 	}
@@ -194,10 +185,26 @@ func bridgeLogLevel() string {
 	return "info"
 }
 
-func (s *Streamer) Status() (running, starting bool, lastError string, restarts int, startedAt time.Time) {
+type StreamStatus struct {
+	Running   bool
+	Starting  bool
+	LastError string
+	Restarts  int
+	StartedAt time.Time
+}
+
+func (st StreamStatus) Active() bool { return st.Running || st.Starting }
+
+func (s *Streamer) Status() StreamStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.running, s.starting, s.lastError, s.restarts, s.startedAt
+	return StreamStatus{
+		Running:   s.running,
+		Starting:  s.starting,
+		LastError: s.lastError,
+		Restarts:  s.restarts,
+		StartedAt: s.startedAt,
+	}
 }
 
 func (s *Streamer) supervise() {
@@ -223,7 +230,7 @@ func (s *Streamer) supervise() {
 				log.Printf("streamer: watchdog — no playable HLS after 20s, restarting pipeline")
 				s.cancel()
 			} else if age >= 60*time.Second {
-				if st, err := os.Stat(filepath.Join(*workDir, "hls", playlistName)); err == nil &&
+				if st, err := os.Stat(playlistPath()); err == nil &&
 					time.Since(st.ModTime()) > 12*time.Second {
 					log.Printf("streamer: watchdog — segments stale for 12s, restarting pipeline")
 					s.cancel()
@@ -254,8 +261,8 @@ func (s *Streamer) runWithBackoff(ctx context.Context, email, password, serial, 
 }
 
 func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region string) error {
-	hlsDir := filepath.Join(*workDir, "hls")
-	if err := os.MkdirAll(hlsDir, 0o755); err != nil {
+	dir := hlsDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	if err := s.ensureHold(email, password, serial, region); err != nil {
@@ -276,9 +283,9 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		"-hls_segment_type", "fmp4",
 		"-hls_fmp4_init_filename", "init.mp4",
 		"-hls_flags", "delete_segments+temp_file+split_by_time",
-		filepath.Join(hlsDir, playlistName))
+		filepath.Join(dir, playlistName))
 	ff.Dir = *workDir
-	if f, err := os.OpenFile(filepath.Join(*workDir, "ffmpeg.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+	if f, err := os.OpenFile(ffmpegLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		defer f.Close()
 		ff.Stderr = f
 	}
@@ -307,16 +314,12 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	go func() { done <- ff.Wait() }()
 	select {
 	case <-ctx.Done():
-		if hold != nil && hold.Process != nil {
-			_ = hold.Process.Signal(syscall.SIGUSR1)
-		}
+		signalHold(hold)
 		ff.Process.Kill()
 		<-done
 		return nil
 	case err := <-done:
-		if hold != nil && hold.Process != nil {
-			_ = hold.Process.Signal(syscall.SIGUSR1)
-		}
+		signalHold(hold)
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -327,30 +330,14 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 	}
 }
 
-// waitBoth drains remaining Wait() results. already is how many were already
-// received (0 if we bailed on ctx, 1 if one process exited first). Receiving
-// twice after a single receive deadlocks: only two Wait goroutines send.
-func waitBoth(done <-chan error, already int) {
-	for already < 2 {
-		<-done
-		already++
+func signalHold(hold *exec.Cmd) {
+	if hold != nil && hold.Process != nil {
+		_ = hold.Process.Signal(syscall.SIGUSR1)
 	}
 }
 
-func hlsPlayable() bool {
-	dir := hlsDir()
-	st, err := os.Stat(filepath.Join(dir, playlistName))
-	if err != nil || time.Since(st.ModTime()) > 15*time.Second {
-		return false
-	}
-	if inf, err := os.Stat(filepath.Join(dir, "init.mp4")); err != nil || inf.Size() < 100 {
-		return false
-	}
-	data, err := os.ReadFile(filepath.Join(dir, playlistName))
-	if err != nil {
-		return false
-	}
-	n := 0
+func playlistSegments(data []byte) []string {
+	var segs []string
 	for _, ln := range strings.Split(string(data), "\n") {
 		ln = strings.TrimSpace(ln)
 		if ln == "" || strings.HasPrefix(ln, "#") {
@@ -359,53 +346,59 @@ func hlsPlayable() bool {
 		if i := strings.IndexByte(ln, '?'); i >= 0 {
 			ln = ln[:i]
 		}
-		if !strings.HasSuffix(ln, ".m4s") {
-			continue
+		name := filepath.Base(ln)
+		if strings.HasSuffix(name, ".m4s") {
+			segs = append(segs, name)
 		}
-		inf, err := os.Stat(filepath.Join(dir, filepath.Base(ln)))
+	}
+	return segs
+}
+
+func hlsPlayable() bool {
+	st, err := os.Stat(playlistPath())
+	if err != nil || time.Since(st.ModTime()) > 15*time.Second {
+		return false
+	}
+	if inf, err := os.Stat(hlsFile("init.mp4")); err != nil || inf.Size() < 100 {
+		return false
+	}
+	data, err := os.ReadFile(playlistPath())
+	if err != nil {
+		return false
+	}
+	for _, name := range playlistSegments(data) {
+		inf, err := os.Stat(hlsFile(name))
 		if err != nil || inf.Size() < 100 {
 			continue
 		}
-		n++
+		return true
 	}
-	return n >= 1
+	return false
+}
+
+func waitWhileActive(d time.Duration, ready func() bool) bool {
+	deadline := time.Now().Add(d)
+	for {
+		if ready() {
+			return true
+		}
+		if !time.Now().Before(deadline) || !streamer.Status().Active() {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func waitForPlayable(d time.Duration) bool {
-	deadline := time.Now().Add(d)
-	for {
-		if hlsPlayable() {
-			return true
-		}
-		if !time.Now().Before(deadline) {
-			return false
-		}
-		running, starting, _, _, _ := streamer.Status()
-		if !running && !starting {
-			return false
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return waitWhileActive(d, hlsPlayable)
 }
 
 func waitForFile(path string, d time.Duration) bool {
-	deadline := time.Now().Add(d)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return true
-		}
-		if !time.Now().Before(deadline) {
-			return false
-		}
-		running, starting, _, _, _ := streamer.Status()
-		if !running && !starting {
-			return false
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	return waitWhileActive(d, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	})
 }
-
-func hlsDir() string { return filepath.Join(*workDir, "hls") }
 
 func clearHLS() {
 	dir := hlsDir()

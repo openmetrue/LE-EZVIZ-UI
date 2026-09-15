@@ -17,34 +17,22 @@ import (
 
 var recNameRe = regexp.MustCompile(`^(hp2|rec)-[\d-]+_[\d-]+\.mp4$`)
 
-func recDir() string { return filepath.Join(*workDir, "recordings") }
-
 func handleSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	running, starting, _, _, _ := streamer.Status()
-	if !running && !starting {
+	st := streamer.Status()
+	if !st.Active() {
 		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
 		return
 	}
-	dir := hlsDir()
-	manifest, err := os.ReadFile(filepath.Join(dir, playlistName))
+	manifest, err := os.ReadFile(playlistPath())
 	if err != nil {
 		http.Error(w, T(langOf(r), "save.inactive"), http.StatusServiceUnavailable)
 		return
 	}
-	var segs []string
-	for _, ln := range strings.Split(string(manifest), "\n") {
-		ln = strings.TrimSpace(ln)
-		if i := strings.IndexByte(ln, '?'); i >= 0 {
-			ln = ln[:i]
-		}
-		if strings.HasSuffix(ln, ".m4s") {
-			segs = append(segs, filepath.Base(ln))
-		}
-	}
+	segs := playlistSegments(manifest)
 	if len(segs) == 0 {
 		http.Error(w, T(langOf(r), "save.empty"), http.StatusServiceUnavailable)
 		return
@@ -72,11 +60,11 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 	}
 	go func() {
 		defer stdin.Close()
-		if init, err := os.ReadFile(filepath.Join(dir, "init.mp4")); err == nil {
+		if init, err := os.ReadFile(hlsFile("init.mp4")); err == nil {
 			stdin.Write(init)
 		}
 		for _, s := range segs {
-			if data, err := os.ReadFile(filepath.Join(dir, s)); err == nil {
+			if data, err := os.ReadFile(hlsFile(s)); err == nil {
 				stdin.Write(data)
 			}
 		}

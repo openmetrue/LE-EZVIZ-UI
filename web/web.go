@@ -62,11 +62,7 @@ func render(w http.ResponseWriter, r *http.Request, title, body string) {
 func publicOrigin(r *http.Request) string {
 	proto := r.Header.Get("X-Forwarded-Proto")
 	if proto == "" {
-		if r.TLS != nil {
-			proto = "https"
-		} else {
-			proto = "https"
-		}
+		proto = "https"
 	}
 	host := r.Header.Get("X-Forwarded-Host")
 	if host == "" {
@@ -344,7 +340,7 @@ prev.onload = () => { prev.style.display = "block"; };
 const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 const modeEl = document.getElementById("mode");
-let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, readyHits = 0, goneHits = 0;
+let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, goneHits = 0;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -417,7 +413,7 @@ async function poll() {
       seenRestarts = s.restarts;
     }
     const ready = !!(s.running && s.manifest);
-    if (ready) { readyHits++; goneHits = 0; } else { readyHits = 0; goneHits++; }
+    if (ready) { goneHits = 0; } else { goneHits++; }
     const dead = !s.running && !s.starting;
     if (attached && dead && goneHits >= 2) detach();
     if (ready && !attached) attach();
@@ -487,35 +483,19 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 		streamer.Touch()
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	path := filepath.Join(hlsDir(), name)
+	path := hlsFile(name)
 	if name == playlistName {
-		if !hlsPlayable() {
-			running, starting, _, _, _ := streamer.Status()
-			if (!running && !starting) || !waitForPlayable(20*time.Second) {
-				running, starting, _, _, _ = streamer.Status()
-				if running || starting {
-					w.Header().Set("Retry-After", "2")
-					http.Error(w, "starting", http.StatusServiceUnavailable)
-					return
-				}
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
+		if !hlsPlayable() && !waitForPlayable(20*time.Second) {
+			hlsNotReady(w)
+			return
 		}
 	} else if _, err := os.Stat(path); err != nil {
-		running, starting, _, _, _ := streamer.Status()
 		wait := time.Duration(0)
-		if running || starting {
+		if streamer.Status().Active() {
 			wait = 5 * time.Second
 		}
 		if wait == 0 || !waitForFile(path, wait) {
-			running, starting, _, _, _ = streamer.Status()
-			if running || starting {
-				w.Header().Set("Retry-After", "2")
-				http.Error(w, "starting", http.StatusServiceUnavailable)
-				return
-			}
-			http.Error(w, "not found", http.StatusNotFound)
+			hlsNotReady(w)
 			return
 		}
 	}
@@ -534,6 +514,15 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, path)
+}
+
+func hlsNotReady(w http.ResponseWriter) {
+	if streamer.Status().Active() {
+		w.Header().Set("Retry-After", "2")
+		http.Error(w, "starting", http.StatusServiceUnavailable)
+		return
+	}
+	http.Error(w, "not found", http.StatusNotFound)
 }
 
 func livePlaylist(data []byte, token string) []byte {
@@ -569,21 +558,21 @@ func rewritePlaylist(data []byte, token string) []byte {
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
 	maybeRefreshDevStatus()
-	running, starting, lastError, restarts, startedAt := streamer.Status()
+	st := streamer.Status()
 	ds, dsAt := devStatusGet()
 	w.Header().Set("Content-Type", "application/json")
 	resp := map[string]any{
-		"running":     running,
-		"starting":    starting,
-		"manifest":    running && hlsPlayable(),
-		"last_error":  lastError,
-		"restarts":    restarts,
+		"running":     st.Running,
+		"starting":    st.Starting,
+		"manifest":    st.Running && hlsPlayable(),
+		"last_error":  st.LastError,
+		"restarts":    st.Restarts,
 		"configured":  streamer.configured(),
 		"stream_mode": streamMode(),
 		"device":      ds,
 	}
-	if !startedAt.IsZero() {
-		resp["started_at"] = startedAt
+	if !st.StartedAt.IsZero() {
+		resp["started_at"] = st.StartedAt
 	}
 	if !dsAt.IsZero() {
 		resp["device_at"] = dsAt

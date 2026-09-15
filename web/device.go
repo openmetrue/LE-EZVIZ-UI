@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,12 +35,9 @@ func fetchDevStatus() (devStatus, error) {
 	email, password, serial, region := streamer.creds()
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, *bridgePath,
-		"-region", region, "-deviceSerial", serial,
-		"-statusOnly", "-stdout=false", "-logFile=true",
-		"-logLevel", bridgeLogLevel())
-	cmd.Dir = *workDir
-	cmd.Env = append(os.Environ(), "EZVIZ_EMAIL="+email, "EZVIZ_PASSWORD="+password)
+	cmd := exec.CommandContext(ctx, *bridgePath, bridgeArgv(region, serial,
+		"-statusOnly", "-stdout=false", "-logFile=true")...)
+	applyBridgeEnv(cmd, email, password)
 	out, err := cmd.Output()
 	if err != nil {
 		return devStatus{}, err
@@ -74,11 +70,11 @@ func devStatusSave() {
 	if err != nil {
 		return
 	}
-	os.WriteFile(filepath.Join(*workDir, "devstatus.json"), data, 0o600)
+	os.WriteFile(workFile("devstatus.json"), data, 0o600)
 }
 
 func devStatusLoad() {
-	data, err := os.ReadFile(filepath.Join(*workDir, "devstatus.json"))
+	data, err := os.ReadFile(workFile("devstatus.json"))
 	if err != nil {
 		return
 	}
@@ -108,8 +104,6 @@ func devStatusGet() (devStatus, time.Time) {
 	defer devStatusMu.Unlock()
 	return devStatusVal, devStatusAt
 }
-
-func previewPath() string { return filepath.Join(*workDir, "preview.jpg") }
 
 // maybeDownloadCover fetches the EZVIZ cloud cover (resourceCover / devpic).
 func maybeDownloadCover(url string) {
