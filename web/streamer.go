@@ -280,7 +280,7 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
 		"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "3000k",
-		"-g", "15", "-keyint_min", "15", "-sc_threshold", "0", "-bf", "0",
+		"-g", "8", "-keyint_min", "8", "-sc_threshold", "0", "-bf", "0",
 		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0",
 		"-an", "-f", "h264", "pipe:1",
 	}

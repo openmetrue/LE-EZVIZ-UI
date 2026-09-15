@@ -318,6 +318,7 @@ func handleWebRTC(w http.ResponseWriter, r *http.Request) {
 				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
 					if idr := ringLastIDR(); len(idr) > 0 {
 						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
+						_ = track.WriteSample(media.Sample{Data: idr, Duration: time.Second / 15})
 					}
 				}
 			}
