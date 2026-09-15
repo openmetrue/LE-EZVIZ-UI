@@ -25,11 +25,17 @@ That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, enables `ezvizd.service`, and 
 Pin a version:
 
 ```sh
-curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v0.1.9/install.sh \
-  | sudo EZVIZ_VERSION=v0.1.9 bash
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v0.2.0/install.sh \
+  | sudo EZVIZ_VERSION=v0.2.0 bash
 ```
 
-Publishing a build: tag and push (`git tag v0.1.9 && git push origin v0.1.9`). CI attaches `ezvizd-linux-amd64` and `le-ezviz-vs-linux-amd64` to the release.
+Publishing a build: tag and push (`git tag v0.2.0 && git push origin v0.2.0`). CI attaches `ezvizd-linux-amd64` and `le-ezviz-vs-linux-amd64` to the release.
+
+### v0.2.0 (breaking)
+
+- Live is WebRTC H.264 (not HLS); gray-on-start recovery via `LivePub` keyframe gating
+- Bridge supports **MPEG-PS only** (HP2 and similar). RTP payload decode removed — use upstream LE-EZVIZ-VS for RTP-only models
+- Smaller client surface (dropped unused CLI flags, fat JSON structs, in-process ffmpeg remux deps)
 
 The original LE-EZVIZ-VS README follows.
 
@@ -80,7 +86,7 @@ As I am only one person looking into this and not seeing much else online, infor
 
 ## What currently works
 
-Currently as of 2026-01-04, MPEG-PS streaming works and so does H.265 RTP streams with no encryption enabled.
+This fork targets **MPEG-PS** cameras (HP2 and similar). RTP payload decode was removed to keep the bridge small; use upstream LE-EZVIZ-VS if you need H.265 RTP models.
 
 ## If you want to help
 

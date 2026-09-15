@@ -28,7 +28,7 @@ This daemon is MIT. The stream client at the repo root stays LGPL-2.1 (upstream 
 
 | Path | What |
 |------|------|
-| `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS). Extra flags: `-out` (stdout `-` or a FIFO), `-idleWait`, `EZVIZ_EMAIL` / `EZVIZ_PASSWORD`, `-statusOnly`, `-statusRaw`, `-maxStreamTime` (reconnect before the ~180s battery cutoff). |
+| `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS), focused on MPEG-PS. Flags used by ezvizd: `-out`, `-idleWait`, `-maxStreamTime`, `-statusOnly`, env credentials. |
 | `web/` | Sources for the **`ezvizd`** daemon — site password, WebRTC Live (`LivePub`), recordings (1 GB cap), battery history, logs, shareable token URL. |
 | `deploy/` | Example `systemd` unit and nginx snippet. |
 
