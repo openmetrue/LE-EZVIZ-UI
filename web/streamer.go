@@ -256,22 +256,12 @@ func (s *Streamer) runWithBackoff(ctx context.Context, email, password, serial, 
 	s.mu.Unlock()
 }
 
-func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region string) error {
-	if err := s.ensureHold(email, password, serial, region); err != nil {
-		return fmt.Errorf("session: %w", err)
-	}
-	ringClear()
-	defer rtcDropTrack()
-	_ = rtcEnsureTrack()
-
-	pr, pw := io.Pipe()
-	var closePw sync.Once
-	closeWriter := func() { closePw.Do(func() { _ = pw.Close() }) }
-
-	args := []string{
+// liveFFmpegArgs transcodes camera MPEG-PS to low-latency Baseline H.264 for WebRTC.
+// Short GOP (g=4) caps how long a late joiner waits for a keyframe after gating.
+func liveFFmpegArgs() []string {
+	return []string{
 		"-hide_banner", "-loglevel", "warning",
 		"-threads", "1", "-filter_threads", "1",
-		// Demux as soon as bytes arrive — no probe/analyze cushion.
 		"-fflags", "+genpts+nobuffer+discardcorrupt",
 		"-flags", "low_delay",
 		"-err_detect", "ignore_err",
@@ -283,13 +273,70 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		"-vf", "scale=-2:720:flags=fast_bilinear",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-		// VBV ≈ 1–2 frames at 1200k: large bufsize was buying smoothness with seconds of delay.
 		"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1500k",
 		"-g", "4", "-keyint_min", "4", "-sc_threshold", "0", "-bf", "0",
 		"-x264-params", "threads=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0:bframes=0:b-adapt=0:mbtree=0:weightp=0:aq-mode=0:repeat-headers=1:aud=0:sps-id=0:keyint=4:min-keyint=4",
 		"-an", "-f", "h264", "pipe:1",
 	}
-	ff := exec.CommandContext(ctx, *ffmpegPath, args...)
+}
+
+func teeFIFOTo(w io.Writer) {
+	f, err := os.OpenFile(fifoPath(), os.O_RDONLY, 0)
+	if err != nil {
+		log.Printf("streamer: fifo: %v", err)
+		return
+	}
+	defer f.Close()
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := f.Read(buf)
+		if n > 0 {
+			rawRingPush(buf[:n])
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func watchKeyframeGaps(ctx context.Context) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	var armed bool
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if rtcFresh(2 * time.Second) {
+				armed = false
+				continue
+			}
+			if !armed {
+				armed = true
+				rtcRequestIDR()
+				log.Printf("streamer: H264 gap — waiting for keyframe after possible VTDU reconnect")
+			}
+		}
+	}
+}
+
+func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region string) error {
+	if err := s.ensureHold(email, password, serial, region); err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	rtcDropTrack()
+	defer rtcDropTrack()
+	_ = rtcEnsureTrack()
+
+	pr, pw := io.Pipe()
+	var closePw sync.Once
+	closeWriter := func() { closePw.Do(func() { _ = pw.Close() }) }
+
+	ff := exec.CommandContext(ctx, *ffmpegPath, liveFFmpegArgs()...)
 	ff.Dir = *workDir
 	ff.Stdin = pr
 	if f, err := os.OpenFile(ffmpegLogPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
@@ -309,29 +356,9 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		_ = syscall.Setpriority(syscall.PRIO_PROCESS, ff.Process.Pid, -10)
 	}
 	go pumpH264(h264)
-
-	// Tee camera MPEG-PS: original → raw ring (Save), copy → ffmpeg (WebRTC).
 	go func() {
 		defer closeWriter()
-		f, err := os.OpenFile(fifoPath(), os.O_RDONLY, 0)
-		if err != nil {
-			log.Printf("streamer: fifo: %v", err)
-			return
-		}
-		defer f.Close()
-		buf := make([]byte, 32<<10)
-		for {
-			n, err := f.Read(buf)
-			if n > 0 {
-				rawRingPush(buf[:n])
-				if _, werr := pw.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
+		teeFIFOTo(pw)
 	}()
 
 	s.mu.Lock()
@@ -357,31 +384,7 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 			log.Printf("streamer: first H264 after %s (run #%d)", time.Since(t0).Round(10*time.Millisecond), run)
 		}
 	}(s.restarts, s.startedAt)
-
-	// After EZVIZ's ~170s VTDU reconnect the HEVC bitstream discontinuities;
-	// ask for a fresh IDR so Safari can resync (brief freeze beats a gray flash).
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		var armed bool
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				fresh := rtcFresh(2 * time.Second)
-				if !fresh {
-					if !armed {
-						armed = true
-						rtcRequestIDR()
-						log.Printf("streamer: H264 gap — waiting for keyframe after possible VTDU reconnect")
-					}
-					continue
-				}
-				armed = false
-			}
-		}
-	}()
+	go watchKeyframeGaps(ctx)
 
 	done := make(chan error, 1)
 	go func() { done <- ff.Wait() }()

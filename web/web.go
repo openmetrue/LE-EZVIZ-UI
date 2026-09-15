@@ -454,6 +454,7 @@ const token = "` + tokJS + `";
 const tokQ = token ? ("?token=" + encodeURIComponent(token)) : "";
 const st = document.getElementById("st");
 let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestarts = 0, attachAt = 0, cooldownUntil = 0, pc = null, rtcOK = ` + rtcJS + `;
+let lastPkts = 0, lastDecoded = 0, decodeStuckSince = 0, streamReady = false;
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
@@ -532,10 +533,11 @@ async function attach() {
     if (st) st.textContent = t.noRtc;
     return;
   }
-  if (!rtcOK) return;
+  if (!rtcOK || !streamReady) return;
   attached = true;
   hasPlayed = false;
   attachAt = Date.now();
+  lastPkts = 0; lastDecoded = 0; decodeStuckSince = 0;
   try {
     await attachRTC();
     if (await waitPlaying(20000)) {
@@ -546,14 +548,15 @@ async function attach() {
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   attached = false;
   hasPlayed = false;
-  cooldownUntil = Date.now() + 400;
+  cooldownUntil = Date.now() + 800;
 }
 
 function detach() {
   attached = false;
   hasPlayed = false;
   attachAt = 0;
-  cooldownUntil = Date.now() + 400;
+  lastPkts = 0; lastDecoded = 0; decodeStuckSince = 0;
+  cooldownUntil = Date.now() + 800;
   if (pc) { try { pc.close(); } catch (_) {} pc = null; }
   const old = vid();
   old.removeAttribute("src");
@@ -567,16 +570,44 @@ function detach() {
   bindVideo(neu);
 }
 
+async function checkDecodeHealth() {
+  if (!attached || !pc) return;
+  const v = vid();
+  // No dimensions after ICE + keyframe budget → gray/black stuck; full renegotiate.
+  if (attachAt && Date.now() - attachAt > 8000 && v.videoWidth === 0) {
+    detach();
+    return;
+  }
+  try {
+    const stats = await pc.getStats();
+    let pkts = 0, decoded = 0;
+    stats.forEach((r) => {
+      if (r.type === "inbound-rtp" && (r.kind === "video" || r.mediaType === "video")) {
+        pkts += r.packetsReceived || 0;
+        decoded += r.framesDecoded || 0;
+      }
+    });
+    if (pkts > lastPkts + 8 && decoded <= lastDecoded) {
+      if (!decodeStuckSince) decodeStuckSince = Date.now();
+      // RTP flowing but decoder not producing frames → classic gray lockup.
+      if (Date.now() - decodeStuckSince > 4000) { decodeStuckSince = 0; detach(); return; }
+    } else decodeStuckSince = 0;
+    lastPkts = pkts;
+    lastDecoded = decoded;
+  } catch (_) {}
+}
+
 setInterval(() => {
   const v = vid();
   if (attached && !hasPlayed && attachAt && Date.now() - attachAt > 45000) detach();
+  checkDecodeHealth();
   if (!attached || v.paused || !hasPlayed) { lastT = -1; stuckSince = 0; return; }
   if (v.currentTime === lastT) {
     if (!stuckSince) stuckSince = Date.now();
     if (Date.now() - stuckSince > 15000) { stuckSince = 0; detach(); }
   } else stuckSince = 0;
   lastT = v.currentTime;
-}, 4000);
+}, 2000);
 
 async function poll() {
   if (document.visibilityState !== "visible") {
@@ -589,13 +620,15 @@ async function poll() {
     const s = await (await fetch(base + "/api/status" + tokQ)).json();
 ` + chromePoll + `
     rtcOK = !!s.webrtc;
+    streamReady = !!s.ready;
     if (s.restarts && s.restarts !== seenRestarts) {
       if (seenRestarts && attached) detach();
       seenRestarts = s.restarts;
     }
     const dead = !s.running && !s.starting;
     if (attached && dead) detach();
-    if (!attached && (s.starting || s.running || s.ready)) attach();
+    // Wait for an encoder IDR (ready) before joining — mid-GOP join stays gray forever.
+    if (!attached && streamReady) attach();
     if (!s.configured && st) st.textContent = t.notConfigured;
     else if (s.last_error && dead && st) st.textContent = t.lastError + s.last_error;
   } catch (e) {}
@@ -608,7 +641,6 @@ async function poll() {
     const r = await fetch(base + "/start" + tokQ, {method: "POST"});
     if (!r.ok && st) st.textContent = t.relogin;
   } catch (_) {}
-  if (rtcOK) attach();
   poll();
 })();
 `

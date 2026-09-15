@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+const ringKeep = 180 * time.Second
+
 // rawRing keeps ~ringKeep of the camera MPEG-PS (HEVC 1080p) for Save,
 // separate from the downscaled H.264 used for WebRTC.
 type rawChunk struct {

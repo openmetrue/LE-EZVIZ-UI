@@ -83,22 +83,18 @@ func TestIsLivePath(t *testing.T) {
 	}
 }
 
-func TestRingSnapshotNeedsIDR(t *testing.T) {
-	ringClear()
-	t.Cleanup(ringClear)
-	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x01}, false)
-	if _, ok := ringSnapshot(); ok {
-		t.Fatal("P-frame only must not snapshot")
-	}
+func TestLivePubReadyAfterIDR(t *testing.T) {
+	prev := live
+	live = &LivePub{needKey: true}
+	t.Cleanup(func() { live = prev })
 	if rtcPlayable() {
 		t.Fatal("not ready without IDR")
 	}
-	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x65}, true)
-	ringPush([]byte{0x00, 0x00, 0x00, 0x01, 0x01}, false)
-	data, ok := ringSnapshot()
-	if !ok || len(data) < 10 {
-		t.Fatalf("snapshot ok=%v len=%d", ok, len(data))
+	_ = live.writeAU([]byte{0x00, 0x00, 0x00, 0x01, 0x01}, false)
+	if rtcPlayable() {
+		t.Fatal("P-frame only must not be ready")
 	}
+	_ = live.writeAU([]byte{0x00, 0x00, 0x00, 0x01, 0x65}, true)
 	if !rtcPlayable() || !rtcFresh(time.Second) {
 		t.Fatal("ready after IDR")
 	}

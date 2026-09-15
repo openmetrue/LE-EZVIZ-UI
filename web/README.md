@@ -2,9 +2,9 @@
 
 Web UI for EZVIZ cameras, built on **[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS)**. This `web/` directory is a separate Go module so `go build ./...` at the repository root still builds only the original stream client. The daemon binary is still **`ezvizd`**.
 
-[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS/RTP feed. **`ezvizd`** turns that feed into on-demand HLS, with a site password, recordings, and a battery chart.
+[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS/RTP feed. **`ezvizd`** turns that feed into low-latency WebRTC (H.264), with a site password, recordings, and a battery chart.
 
-It is aimed at cameras with **no local RTSP** (HP2 and others). The camera sleeps until someone opens the page; the stream stops ~30s after the last viewer.
+It is aimed at cameras with **no local RTSP** (HP2 and others). The camera sleeps until someone opens the page; the stream stops ~10s after the last viewer.
 
 ```
 EZVIZ cloud (VTM/VTDU)
@@ -13,11 +13,11 @@ EZVIZ cloud (VTM/VTDU)
      le-ezviz-vs      (this repo root, fork of LE-EZVIZ-VS)
         │ FIFO (-out stream.ps, -idleWait)
         ▼
-     ffmpeg           copy HEVC → fMP4 HLS
+     ffmpeg           re-encode → Baseline H.264 (WebRTC) + raw ring for Save
         ▼
-     ezvizd           auth, on-demand supervisor, archive, battery
+     ezvizd           auth, on-demand LivePub, archive, battery
         ▼
-     browser          native HLS (Safari / iOS)
+     browser          WebRTC (Safari / Chrome / iOS)
 ```
 
 UI languages: English, Русский, 中文, Español, Deutsch, Français, 日本語, Português — switchable on the login page and in Settings.
@@ -29,7 +29,7 @@ This daemon is MIT. The stream client at the repo root stays LGPL-2.1 (upstream 
 | Path | What |
 |------|------|
 | `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS). Extra flags: `-out` (stdout `-` or a FIFO), `-idleWait`, `EZVIZ_EMAIL` / `EZVIZ_PASSWORD`, `-statusOnly`, `-statusRaw`, `-maxStreamTime` (reconnect before the ~180s battery cutoff). |
-| `web/` | Sources for the **`ezvizd`** daemon — site password, HLS, recordings (1 GB cap), battery history, logs, shareable token URL. |
+| `web/` | Sources for the **`ezvizd`** daemon — site password, WebRTC Live (`LivePub`), recordings (1 GB cap), battery history, logs, shareable token URL. |
 | `deploy/` | Example `systemd` unit and nginx snippet. |
 
 Upstream `protocol.md`, `codecs.md`, `encryption.md`, and `.github/workflows/go.yml` are unchanged. The root `readme.md` starts with the LE-EZVIZ-UI story; the rest is still LethalEthan’s original text.
