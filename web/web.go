@@ -39,8 +39,8 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
   .ok { color:#34d399; font-size:13px; margin-top:10px; }
   .muted { color:#9aa4b2; font-size:13px; }
   .player { position:relative; width:100%; aspect-ratio:16/9; border-radius:10px; background:#000; overflow:hidden; margin-top:8px; }
-  .player img, .player video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
-  .player video { z-index:1; background:#000; }
+  .player video { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#000; }
+  .player video::-webkit-media-controls-volume-slider { display:none; }
   code { background:#0c0f14; padding:2px 6px; border-radius:6px; font-size:12px; word-break:break-all; }
   .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .seg { display:flex; width:100%; max-width:100%; padding:3px; gap:2px; background:#12161c; border:1px solid #2a3038; border-radius:10px; box-sizing:border-box; }
@@ -56,7 +56,12 @@ var pageTpl = template.Must(template.New("page").Parse(`<!doctype html>
 
 func render(w http.ResponseWriter, r *http.Request, title, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
 	pageTpl.Execute(w, map[string]any{"Title": title, "Body": template.HTML(body), "Lang": langOf(r)})
+}
+
+func isLivePath(p string) bool {
+	return p == *basePath || p == *basePath+"/"
 }
 
 func publicOrigin(r *http.Request) string {
@@ -295,6 +300,10 @@ func changeStreamMode(r *http.Request, lang string) string {
 }
 
 func handlePlayer(w http.ResponseWriter, r *http.Request) {
+	if !isLivePath(r.URL.Path) {
+		http.NotFound(w, r)
+		return
+	}
 	lang := langOf(r)
 	esc := template.HTMLEscapeString
 	shareURL := publicOrigin(r) + *basePath + "/hls/" + playlistName + "?token=" + cfgCopy().DeviceToken
@@ -318,8 +327,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	})
 	render(w, r, T(lang, "live.title"), tabs(r, "live")+`
 <div class="player">
-  <img id="prev" alt="" src="`+*basePath+`/preview.jpg">
-  <video id="v" controls autoplay muted playsinline poster="`+*basePath+`/preview.jpg"></video>
+  <video id="v" controls autoplay muted playsinline></video>
 </div>
 <p class="muted"><span id="bat"></span><span id="st"></span></p>
 <p class="muted" id="mode"></p>
@@ -331,12 +339,6 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 const base = "`+*basePath+`";
 const shareURL = "`+template.JSEscapeString(shareURL)+`";
 const t = `+string(jsT)+`;
-const prev = document.getElementById("prev");
-function showPreview() {
-  prev.src = base + "/preview.jpg?t=" + Date.now();
-}
-prev.onerror = () => { prev.style.display = "none"; };
-prev.onload = () => { prev.style.display = "block"; };
 const st = document.getElementById("st");
 const bat = document.getElementById("bat");
 const modeEl = document.getElementById("mode");
@@ -344,7 +346,8 @@ let attached = false, hasPlayed = false, lastT = -1, stuckSince = 0, seenRestart
 
 function vid() { return document.getElementById("v"); }
 function bindVideo(el) {
-  el.addEventListener("playing", () => { hasPlayed = true; prev.style.display = "none"; if (st.textContent === t.waking) st.textContent = ""; });
+  el.muted = true;
+  el.addEventListener("playing", () => { hasPlayed = true; if (st.textContent === t.waking) st.textContent = ""; });
   el.addEventListener("error", () => { if (attached) detach(); });
 }
 bindVideo(vid());
@@ -375,7 +378,6 @@ function detach() {
   neu.removeAttribute("src");
   old.replaceWith(neu);
   bindVideo(neu);
-  showPreview();
 }
 
 setInterval(() => {
@@ -415,8 +417,8 @@ async function poll() {
     const ready = !!(s.running && s.manifest);
     if (ready) { goneHits = 0; } else { goneHits++; }
     const dead = !s.running && !s.starting;
-    if (attached && dead && goneHits >= 2) detach();
-    if (ready && !attached) attach();
+    if (attached && dead) detach();
+    if (!attached && (s.starting || s.running)) attach();
     if (!s.configured) st.textContent = t.notConfigured;
     else if (s.last_error && dead) st.textContent = t.lastError + s.last_error;
     else if (!hasPlayed && (s.starting || s.running)) st.textContent = t.waking;
@@ -459,17 +461,6 @@ func handleStart(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func handlePreview(w http.ResponseWriter, r *http.Request) {
-	p := previewPath()
-	if _, err := os.Stat(p); err != nil {
-		http.NotFound(w, r)
-		return
-	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Type", "image/jpeg")
-	http.ServeFile(w, r, p)
-}
-
 func handleHLS(w http.ResponseWriter, r *http.Request) {
 	name := filepath.Base(r.URL.Path)
 	if name != playlistName && !strings.HasSuffix(name, ".m4s") && name != "init.mp4" {
@@ -485,17 +476,21 @@ func handleHLS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	path := hlsFile(name)
 	if name == playlistName {
-		if !hlsPlayable() && !waitForPlayable(20*time.Second) {
+		if !hlsPlayable() && !waitForPlayable(15*time.Second) {
 			hlsNotReady(w)
 			return
 		}
-	} else if _, err := os.Stat(path); err != nil {
+	} else if !hlsFileReady(path) {
 		wait := time.Duration(0)
-		if streamer.Status().Active() {
-			wait = 5 * time.Second
+		if name == "init.mp4" && streamer.Status().Active() {
+			wait = 15 * time.Second
 		}
 		if wait == 0 || !waitForFile(path, wait) {
-			hlsNotReady(w)
+			if name == "init.mp4" && streamer.Status().Active() {
+				hlsNotReady(w)
+				return
+			}
+			http.NotFound(w, r)
 			return
 		}
 	}

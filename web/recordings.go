@@ -46,7 +46,7 @@ func handleSave(w http.ResponseWriter, r *http.Request) {
 
 	cmd := exec.Command(*ffmpegPath, "-y", "-hide_banner", "-loglevel", "error",
 		"-fflags", "+genpts", "-f", "mp4", "-i", "pipe:0",
-		"-map", "0:v:0", "-c:v", "copy",
+		"-map", "0:v:0", "-an", "-c:v", "copy",
 		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
 		"-movflags", "+faststart", out)
 	stdin, err := cmd.StdinPipe()

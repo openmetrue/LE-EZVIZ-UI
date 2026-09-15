@@ -54,7 +54,6 @@ func main() {
 	mux.HandleFunc(b+"/setup", auth(handleSetup))
 	mux.HandleFunc(b+"/", auth(handlePlayer))
 	mux.HandleFunc(b+"/start", auth(handleStart))
-	mux.HandleFunc(b+"/preview.jpg", authOrToken(handlePreview))
 	mux.HandleFunc(b+"/hls/", authOrToken(handleHLS))
 	mux.HandleFunc(b+"/save", auth(handleSave))
 	mux.HandleFunc(b+"/recordings", auth(handleRecordings))

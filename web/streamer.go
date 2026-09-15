@@ -277,7 +277,7 @@ func (s *Streamer) runOnce(ctx context.Context, email, password, serial, region 
 		"-probesize", "32768", "-analyzeduration", "200000",
 		"-f", "mpeg", "-i", fifoPath(),
 		"-flush_packets", "1",
-		"-map", "0:v:0", "-c:v", "copy", "-tag:v", "hvc1",
+		"-map", "0:v:0", "-c:v", "copy", "-an", "-tag:v", "hvc1",
 		"-bsf:v", "setts=pts=N/(15*TB):dts=N/(15*TB)",
 		"-f", "hls", "-hls_time", "1", "-hls_init_time", "0.5", "-hls_list_size", "180",
 		"-hls_segment_type", "fmp4",
@@ -354,12 +354,19 @@ func playlistSegments(data []byte) []string {
 	return segs
 }
 
+const hlsMinFile = 100
+
+func hlsFileReady(path string) bool {
+	inf, err := os.Stat(path)
+	return err == nil && inf.Size() >= hlsMinFile
+}
+
 func hlsPlayable() bool {
 	st, err := os.Stat(playlistPath())
 	if err != nil || time.Since(st.ModTime()) > 15*time.Second {
 		return false
 	}
-	if inf, err := os.Stat(hlsFile("init.mp4")); err != nil || inf.Size() < 100 {
+	if !hlsFileReady(hlsFile("init.mp4")) {
 		return false
 	}
 	data, err := os.ReadFile(playlistPath())
@@ -367,11 +374,9 @@ func hlsPlayable() bool {
 		return false
 	}
 	for _, name := range playlistSegments(data) {
-		inf, err := os.Stat(hlsFile(name))
-		if err != nil || inf.Size() < 100 {
-			continue
+		if hlsFileReady(hlsFile(name)) {
+			return true
 		}
-		return true
 	}
 	return false
 }
@@ -395,8 +400,7 @@ func waitForPlayable(d time.Duration) bool {
 
 func waitForFile(path string, d time.Duration) bool {
 	return waitWhileActive(d, func() bool {
-		_, err := os.Stat(path)
-		return err == nil
+		return hlsFileReady(path)
 	})
 }
 

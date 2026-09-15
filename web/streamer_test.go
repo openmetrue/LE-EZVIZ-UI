@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,5 +90,36 @@ func TestStreamStatusActive(t *testing.T) {
 	}
 	if !(StreamStatus{Running: true}).Active() || !(StreamStatus{Starting: true}).Active() {
 		t.Fatal("running or starting should be active")
+	}
+}
+
+func TestIsLivePath(t *testing.T) {
+	orig := *basePath
+	t.Cleanup(func() { *basePath = orig })
+	*basePath = "/ezviz"
+	if !isLivePath("/ezviz") || !isLivePath("/ezviz/") {
+		t.Fatal("live paths")
+	}
+	if isLivePath("/ezviz/preview.jpg") || isLivePath("/ezviz/hls/live.m3u8") {
+		t.Fatal("leftover preview must not be the live page")
+	}
+}
+
+func TestHlsFileReady(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "init.mp4")
+	if hlsFileReady(p) {
+		t.Fatal("missing file")
+	}
+	if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hlsFileReady(p) {
+		t.Fatal("empty-ish file must wait")
+	}
+	if err := os.WriteFile(p, make([]byte, hlsMinFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hlsFileReady(p) {
+		t.Fatal("complete file")
 	}
 }

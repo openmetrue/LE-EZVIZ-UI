@@ -4,12 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"net/http"
 	"os"
 	"os/exec"
-	"strings"
 	"sync"
 	"time"
 )
@@ -22,7 +18,6 @@ type devStatus struct {
 	Pir              int    `json:"pir"`
 	UpgradeAvailable int    `json:"upgrade_available"`
 	KeepAliveSec     int    `json:"keep_alive_sec"`
-	Cover            string `json:"cover,omitempty"`
 }
 
 var (
@@ -58,9 +53,6 @@ func applyDevStatus(ds devStatus) {
 	devStatusAt = time.Now()
 	devStatusMu.Unlock()
 	devStatusSave()
-	if ds.Cover != "" {
-		go maybeDownloadCover(ds.Cover)
-	}
 }
 
 func devStatusSave() {
@@ -103,31 +95,4 @@ func devStatusGet() (devStatus, time.Time) {
 	devStatusMu.Lock()
 	defer devStatusMu.Unlock()
 	return devStatusVal, devStatusAt
-}
-
-// maybeDownloadCover fetches the EZVIZ cloud cover (resourceCover / devpic).
-func maybeDownloadCover(url string) {
-	if url == "" || (!strings.HasPrefix(url, "https://") && !strings.HasPrefix(url, "http://")) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		log.Printf("preview: cover download failed: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil || len(data) < 100 {
-		return
-	}
-	os.WriteFile(previewPath(), data, 0o644)
 }

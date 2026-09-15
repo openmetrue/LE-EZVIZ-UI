@@ -6,7 +6,6 @@ func workFile(name string) string { return filepath.Join(*workDir, name) }
 
 func hlsDir() string        { return workFile("hls") }
 func fifoPath() string      { return workFile("stream.ps") }
-func previewPath() string   { return workFile("preview.jpg") }
 func recDir() string        { return workFile("recordings") }
 func ffmpegLogPath() string { return workFile("ffmpeg.log") }
 func bridgeErrPath() string { return workFile("bridge.err") }
