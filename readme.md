@@ -1,3 +1,46 @@
+# LE-EZVIZ-UI
+
+A web interface for EZVIZ cameras that do not expose local RTSP. Built on [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS).
+
+## Rationale
+
+EZVIZ HP2 and similar devices do not provide a local RTSP endpoint. Live video is available only through the official mobile application. Time from launching the app to a usable frame is ~15 seconds: splash screen, device list, then a second confirmation to start viewing.
+
+Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand Live as HEVC over HTTP fMP4, site authentication, Save, and battery history.
+
+![Live player demo](demo.gif)
+
+Build and deployment: [`web/README.md`](web/README.md).
+
+## Install
+
+Linux amd64 with systemd. Binaries come from [GitHub Releases](https://github.com/openmetrue/LE-EZVIZ-UI/releases); the script below fetches the latest:
+
+```sh
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/install.sh | sudo bash
+```
+
+That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, ffmpeg (Save remux, plus `libblas3`/`liblapack3`), enables `ezvizd.service`, and adds nginx `location /ezviz/` when nginx is present. Live is served over HTTP, so no extra inbound ports are needed. Existing `config.json` is left in place. Then open the site once to set the password.
+
+Pin a version:
+
+```sh
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v1.0.0/install.sh \
+  | sudo EZVIZ_VERSION=v1.0.0 bash
+```
+
+Publishing a build: tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`). The release carries `ezvizd-linux-amd64`, `le-ezviz-vs-linux-amd64`, `ezvizd.service`, `install.sh`, `VERSION` and `sha256sums.txt` — the names `install.sh` downloads.
+
+### Notes
+
+- Live is HEVC over HTTP fMP4 (no HLS, no WebRTC), played with MediaSource.
+- Bridge supports **MPEG-PS only** (HP2 and similar); RTP payload decode is not used — use upstream LE-EZVIZ-VS for RTP-only models.
+- Stream-client patches are listed in [`web/README.md`](web/README.md); the rest of the repository root is upstream.
+
+The original LE-EZVIZ-VS README follows.
+
+---
+
 # LE-EZVIZ Video Stream
 
 LE-EZVIZ-VS, this is a piece of my wider project of creating a fully fledged program to control and connect to EZVIZ cameras in my own implementation. I have many modules as it makes testing easier and more will be released when ready. I am releasing this to hopefully spur on more development and get more help and hands on with the streaming implementation as not much is out there.
@@ -43,7 +86,7 @@ As I am only one person looking into this and not seeing much else online, infor
 
 ## What currently works
 
-Currently as of 2026-01-04, MPEG-PS streaming works and so does H.265 RTP streams with no encryption enabled.
+This fork targets **MPEG-PS** cameras (HP2 and similar). RTP payload decode is not used; use upstream LE-EZVIZ-VS if you need H.265 RTP models.
 
 ## If you want to help
 

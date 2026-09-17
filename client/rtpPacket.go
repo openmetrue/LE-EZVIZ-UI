@@ -150,9 +150,6 @@ func (LEZ *LE_EZVIZ_Client) DecodeRTP(buf []byte) ([]byte, error) {
 		log.Sugar().Debugf("RTP Unkown Payload: %x", Payload)
 		return nil, nil
 	}
-	log.Debug("RTP Header", zap.Uint8("Ver", Version), zap.Bool("Pad", Padding), zap.Bool("Ext", Extension), zap.Uint8("CC", ContributionCount), zap.Bool("Mark", Marker), zap.Uint8("PayloadT", PayloadType), zap.Uint16("Seq", SequenceNumber), zap.Uint32("Time", TimeStamp), zap.Uint32("SSI", SSI), zap.Int("PayloadLen", len(Payload)))
-	log.Sugar().Debugf("RTP Payload: %x", Payload)
-	return nil, nil
 }
 
 // Currently unsure whether to replace or append the start code

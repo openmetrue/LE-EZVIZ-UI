@@ -18,6 +18,15 @@ __debug_bin
 
 # Dependency directories (remove the comment below to include it)
 .git/
-.github/
 client/streamurl_test.go
 featurecode
+
+# LE-EZVIZ-UI local binaries and runtime
+le-ezviz-vs
+le-ezviz-vs-linux
+web/ezvizd
+web/ezvizd-linux
+config.json
+*.mp4
+.DS_Store
+.vscode/

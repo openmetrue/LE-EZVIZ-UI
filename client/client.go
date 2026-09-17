@@ -5,48 +5,38 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"le-ezviz-vs/api"
 	"le-ezviz-vs/logging"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
 )
 
-const EZLifeUrl = "ezvizlife.com"
+const EZLifeURL = "ezvizlife.com"
 
 var TerminalName = "LE-EZ"
-var Client *http.Client
 var log = logging.Log
 
 const (
 	USE_API_URL = iota
-	USE_DOM_URL
 	USE_AUTH_URL
 )
 
-// Originally I used the mobile headers in my other EZVIZ management software, currently commented out the optional and mobile headers and just using the PC ones for this one
-// I believe we might recieve different information back depending on clientType
-var DefaultHeaders = http.Header{
-	// "Content-Type":  []string{"application/json"},
-	// "Content-Type": []string{"application/x-www-form-urlencoded"},
-	"featureCode": []string{""},
-	"clientType":  []string{"9"}, //3 is mobile, 9 is EZVIZ studio/PC
-	// "osVersion":     []string{"15"},   // optional
-	"clientVersion": []string{"2,5,1,2109068"}, //6.7.9.0507, // optional
-	// "netType":       []string{"WIFI"}, // can be WIFI, LTE
-	"customNo": []string{"1000001"},
-	// "ssid":          []string{""},        // optional, sends the current ssid you're connected to
-	"clientNo": []string{"shipin7"}, // can be web_site, apple, google, shipin7
-	"appId":    []string{"ys7"},     // ys7 for yingshi and 7 is a lucky number in China, the chinese name of ezviz which translates to fluorite
-	// which likely also explains the logo being different coloured fluorite crsytals.
-	// "language":      []string{"en_GB"},
-	// "lang":          []string{"en"},
-	"User-Agent": []string{""},
+var defaultHeaders = http.Header{
+	"featureCode":   []string{""},
+	"clientType":    []string{"9"},
+	"clientVersion": []string{"2,5,1,2109068"},
+	"customNo":      []string{"1000001"},
+	"clientNo":      []string{"shipin7"},
+	"appId":         []string{"ys7"},
+	"User-Agent":    []string{""},
 }
 
 type LE_EZVIZ_Client struct {
@@ -63,197 +53,163 @@ type LE_EZVIZ_Client struct {
 	Password      string
 	Region        string
 	API_URL       string
-	DOM_URL       string
 	AUTH_URL      string
+	StreamOut     io.Writer
+	streamMu      sync.Mutex
+	liveConns     []net.Conn
+	stopN         int32
+}
+
+func (LEZ *LE_EZVIZ_Client) TrackConn(c net.Conn) {
+	LEZ.streamMu.Lock()
+	LEZ.liveConns = append(LEZ.liveConns, c)
+	LEZ.streamMu.Unlock()
+}
+
+func dialTCP(addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: 8 * time.Second, KeepAlive: 20 * time.Second}
+	sock, err := d.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := sock.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+	return sock, nil
+}
+
+func (LEZ *LE_EZVIZ_Client) InterruptStream() {
+	atomic.StoreInt32(&LEZ.stopN, 1)
+	LEZ.streamMu.Lock()
+	conns := append([]net.Conn(nil), LEZ.liveConns...)
+	LEZ.streamMu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+func (LEZ *LE_EZVIZ_Client) BeginStream() {
+	atomic.StoreInt32(&LEZ.stopN, 0)
+}
+
+func (LEZ *LE_EZVIZ_Client) StreamInterrupted() bool {
+	return atomic.LoadInt32(&LEZ.stopN) != 0
+}
+
+func (LEZ *LE_EZVIZ_Client) DropConns() {
+	LEZ.streamMu.Lock()
+	LEZ.liveConns = nil
+	LEZ.streamMu.Unlock()
 }
 
 func NewLE_EZVIZ_Client(email, password, region, featurecode, terminalname, clientNo string, timeoutSeconds int) (*LE_EZVIZ_Client, error) {
-	LEZ := &LE_EZVIZ_Client{Email: email, Password: GetMd5(password), Region: region, FeatureCode: featurecode, TerminalName: base64.StdEncoding.EncodeToString([]byte(terminalname)), ClientType: 9, ClientNo: clientNo}
+	lez := &LE_EZVIZ_Client{
+		Email: email, Password: GetMd5(password), Region: region,
+		FeatureCode: featurecode, TerminalName: base64.StdEncoding.EncodeToString([]byte(terminalname)),
+		ClientType: 9, ClientNo: clientNo,
+	}
 	if v, ok := Regions[region]; ok {
 		if region != "Russia" {
-			LEZ.API_URL = "https://api" + v + "." + EZLifeUrl // ex: apiieu.ezvizlife.com
-			LEZ.DOM_URL = "https://" + v + "." + EZLifeUrl    // ex: ieu.ezvizlife.com
+			lez.API_URL = "https://api" + v + "." + EZLifeURL
 		} else {
-			LEZ.API_URL = "https://api.ezvizru.com"
-			LEZ.DOM_URL = "https://ezvizru.com/"
+			lez.API_URL = "https://api.ezvizru.com"
 		}
 	}
-	LEZ.Headers = DefaultHeaders
-	LEZ.Headers["featureCode"] = []string{featurecode}
+	lez.Headers = defaultHeaders.Clone()
+	lez.Headers["featureCode"] = []string{featurecode}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		log.Error("Error creating cookie jar:", zap.Error(err))
 		return nil, err
 	}
-	Client = &http.Client{
+	lez.Client = &http.Client{
 		Timeout: time.Duration(timeoutSeconds) * time.Second,
 		Jar:     jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
-	Client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
+	return lez, nil
+}
+
+func (LEZ *LE_EZVIZ_Client) baseURL(urltype int) (string, error) {
+	switch urltype {
+	case USE_API_URL:
+		return LEZ.API_URL, nil
+	case USE_AUTH_URL:
+		if LEZ.AUTH_URL == "" {
+			return "", errors.New("auth URL not initialised")
+		}
+		return LEZ.AUTH_URL, nil
+	default:
+		return "", errors.New("unknown url type")
 	}
-	LEZ.Client = Client
-	return LEZ, nil
+}
+
+func (LEZ *LE_EZVIZ_Client) doAPIRequest(method, endpoint string, urltype int, body io.Reader, query string) (*http.Response, error) {
+	switch method {
+	case "GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS":
+	default:
+		return nil, errors.New("unknown http method")
+	}
+	base, err := LEZ.baseURL(urltype)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(method, base+endpoint+query, body)
+	if err != nil {
+		return nil, err
+	}
+	LEZ.Headers["Content-Type"] = []string{"application/x-www-form-urlencoded"}
+	req.Header = LEZ.Headers
+	resp, err := LEZ.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("http not ok")
+	}
+	return resp, nil
 }
 
 func (LEZ *LE_EZVIZ_Client) FormURLEncodedAPIRequest(method, endpoint string, urltype int, formData map[string]string) (*http.Response, error) {
-	switch method {
-	case "GET":
-	case "POST":
-	case "PATCH":
-	case "PUT":
-	case "DELETE":
-	case "OPTIONS":
-		break
-	default:
-		return nil, errors.New("unknown http method")
-	}
-	encodedFormData := EncodeURLForm(formData)
-	baseURL := ""
-	switch urltype {
-	case USE_API_URL:
-		baseURL = LEZ.API_URL
-	case USE_DOM_URL:
-		baseURL = LEZ.DOM_URL
-	case USE_AUTH_URL:
-		baseURL = LEZ.AUTH_URL
-	default:
-		return nil, errors.New("unknown url type")
-	}
-	log.Debug("Request", zap.String("URL", baseURL+endpoint), zap.String("FormData", encodedFormData))
-	req, err := http.NewRequest(method, baseURL+endpoint, strings.NewReader(encodedFormData))
-	if err != nil {
-		log.Error("Error creating request", zap.Error(err))
-		return nil, err
-	}
-	LEZ.Headers["Content-Type"] = []string{"application/x-www-form-urlencoded"}
-	req.Header = LEZ.Headers
-	resp, err := LEZ.Client.Do(req)
-	if err != nil {
-		log.Error("Error sending request", zap.Error(err))
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Error("Status not ok", zap.Int("StatusCode", resp.StatusCode))
-		return nil, errors.New("http not ok")
-	}
-	// bodyBytes, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	log.Error("Error reading response body", zap.Error(err))
-	// 	return err
-	// }
-	return resp, nil
+	return LEZ.doAPIRequest(method, endpoint, urltype, strings.NewReader(EncodeURLForm(formData)), "")
 }
 
 func (LEZ *LE_EZVIZ_Client) QueryEncodedAPIRequest(method, endpoint string, urltype int, queryParams map[string]string) (*http.Response, error) {
-	switch method {
-	case "GET":
-	case "POST":
-	case "PATCH":
-	case "PUT":
-	case "DELETE":
-	case "OPTIONS":
-		break
-	default:
-		return nil, errors.New("unknown http method")
+	q := ""
+	if len(queryParams) > 0 {
+		q = EncodeQuery(queryParams)
 	}
-	encodedFormData := EncodeQuery(queryParams)
-	baseURL := ""
-	switch urltype {
-	case USE_API_URL:
-		baseURL = LEZ.API_URL
-	case USE_DOM_URL:
-		baseURL = LEZ.DOM_URL
-	case USE_AUTH_URL:
-		if LEZ.AUTH_URL == "" {
-			return nil, errors.New("auth URL not initialised")
-		}
-		baseURL = LEZ.AUTH_URL
-	default:
-		return nil, errors.New("unknown url type")
-	}
-	log.Debug("Request", zap.String("URL", baseURL+endpoint+encodedFormData))
-	req, err := http.NewRequest(method, baseURL+endpoint+encodedFormData, nil)
-	if err != nil {
-		log.Error("Error creating request", zap.Error(err))
-		return nil, err
-	}
-	LEZ.Headers["Content-Type"] = []string{"application/x-www-form-urlencoded"}
-	req.Header = LEZ.Headers
-	resp, err := LEZ.Client.Do(req)
-	if err != nil {
-		log.Error("Error sending request", zap.Error(err))
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Error("Status not ok", zap.Int("StatusCode", resp.StatusCode))
-		return nil, errors.New("http not ok")
-	}
-	// bodyBytes, err := io.ReadAll(resp.Body)
-	// if err != nil {
-	// 	log.Error("Error reading response body", zap.Error(err))
-	// 	return err
-	// }
-	return resp, nil
-}
-
-func init() {
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		fmt.Println("Error creating cookie jar:", err)
-		return
-	}
-	Client = &http.Client{
-		Timeout: 15 * time.Second,
-		Jar:     jar,
-	}
-	// Disable redirects manually
-	Client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
+	return LEZ.doAPIRequest(method, endpoint, urltype, nil, q)
 }
 
 func (LEZ *LE_EZVIZ_Client) V3_Login() (*V3_Auth_Login_Response, error) {
-	resp, err := LEZ.FormURLEncodedAPIRequest("POST", api.V3_USER_LOGIN_V5, USE_API_URL, map[string]string{"account": LEZ.Email, "password": LEZ.Password, "featureCode": LEZ.FeatureCode, "cuName": base64.StdEncoding.EncodeToString([]byte(TerminalName))})
+	resp, err := LEZ.FormURLEncodedAPIRequest("POST", api.V3_USER_LOGIN_V5, USE_API_URL, map[string]string{
+		"account": LEZ.Email, "password": LEZ.Password,
+		"featureCode": LEZ.FeatureCode,
+		"cuName":      base64.StdEncoding.EncodeToString([]byte(TerminalName)),
+	})
 	if err != nil {
-		log.Error("Error V3_Login", zap.Error(err))
 		return nil, err
 	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Error("Error reading response body", zap.Error(err))
 		return nil, err
 	}
-	var data map[string]interface{}
-	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(&data); err != nil {
-		log.Error("Error decoding JSON", zap.Error(err))
+	lr := new(V3_Auth_Login_Response)
+	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(lr); err != nil {
 		return nil, err
 	}
-	// fmt.Println("Parsed JSON:", data)
-	// fmt.Println("Response Status:", resp.Status)
-	// fmt.Println("Response Header:", resp.Header)
-	// fmt.Println("Response Body:", string(bodyBytes))
-	// fmt.Println("Response Cookies:", resp.Cookies())
-	LR := new(V3_Auth_Login_Response)
-	if err := json.NewDecoder(bytes.NewBuffer(bodyBytes)).Decode(LR); err != nil {
-		log.Error("Error decoding JSON", zap.Error(err))
-		return nil, err
-	}
-	if *LR.Meta.Code != 200 {
-		log.Error("Bad meta code", zap.Int("Code", *LR.Meta.Code))
-		switch *LR.Meta.Code {
-		case 1069:
-			log.Error("Terminal Bind limit reached, remove some logged in devices in: EZVIZ App Settings -> My Profile -> Login Settings -> Terminal Management. Click and hold to delete single or tap One-Click Cleanup, this may cause a 2FA action")
-		case 1226:
-			log.Error("Invalid email or password")
-		case 6002:
-			log.Error("2FA is enabled, currently not supported but will be in a future update")
+	if lr.Meta.Code == nil || *lr.Meta.Code != 200 {
+		code := 0
+		if lr.Meta.Code != nil {
+			code = *lr.Meta.Code
 		}
+		log.Error("Bad meta code", zap.Int("Code", code))
 		return nil, errors.New("api meta code not ok")
-	} else {
-		LEZ.Headers["sessionId"] = []string{*LR.LoginSession.SessionId}
-		LEZ.LoginResponse = LR
 	}
-	return LR, nil
+	LEZ.Headers["sessionId"] = []string{*lr.LoginSession.SessionId}
+	LEZ.LoginResponse = lr
+	return lr, nil
 }

@@ -1,0 +1,41 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+      - name: Test
+        run: cd web && go test ./...
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          VER="${GITHUB_REF_NAME}"
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/le-ezviz-vs-linux-amd64 .
+          (cd web && GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.Version=${VER}" -o ../dist/ezvizd-linux-amd64 .)
+          printf '%s\n' "$VER" > dist/VERSION
+          cp deploy/ezvizd.service dist/ezvizd.service
+          cp deploy/install.sh dist/install.sh
+          chmod +x dist/install.sh dist/ezvizd-linux-amd64 dist/le-ezviz-vs-linux-amd64
+          (cd dist && sha256sum ezvizd-linux-amd64 le-ezviz-vs-linux-amd64 ezvizd.service install.sh VERSION > sha256sums.txt)
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
