@@ -24,6 +24,11 @@ const EZLifeURL = "ezvizlife.com"
 var TerminalName = "LE-EZ"
 var log = logging.Log
 
+// SetLogger points the package logger at the logger built by main, so client
+// logs honour the configured sinks instead of the default init logger (which
+// writes to stdout and would corrupt -out=- / -statusOnly / -listDevices).
+func SetLogger(l *zap.Logger) { log = l }
+
 const (
 	USE_API_URL = iota
 	USE_AUTH_URL

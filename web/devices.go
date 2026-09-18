@@ -16,11 +16,13 @@ type cloudDevice struct {
 	Channel int    `json:"channel"`
 }
 
-func fetchDeviceList(email, password, region string) ([]cloudDevice, error) {
+// logOn is passed in (not read via cfgCopy) so callers may use this while
+// holding cfgMu — e.g. pickDefaultSerial inside updateCfg — without deadlocking.
+func fetchDeviceList(email, password, region string, logOn bool) ([]cloudDevice, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	args := []string{"-region", region, "-listDevices"}
-	if bridgeLogEnabled() {
+	if logOn {
 		args = append(args, "-logFile")
 	}
 	cmd := exec.CommandContext(ctx, *bridgePath, args...)
@@ -36,8 +38,8 @@ func fetchDeviceList(email, password, region string) ([]cloudDevice, error) {
 	return list, nil
 }
 
-func pickDefaultSerial(email, password, region string) string {
-	list, err := fetchDeviceList(email, password, region)
+func pickDefaultSerial(email, password, region string, logOn bool) string {
+	list, err := fetchDeviceList(email, password, region, logOn)
 	if err != nil || len(list) == 0 {
 		return ""
 	}
@@ -63,7 +65,7 @@ func handleDevicesAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not configured", http.StatusServiceUnavailable)
 		return
 	}
-	list, err := fetchDeviceList(c.Email, c.Password, c.Region)
+	list, err := fetchDeviceList(c.Email, c.Password, c.Region, bridgeLogEnabled())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -106,7 +108,7 @@ func handleLiveDevice(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not configured", http.StatusServiceUnavailable)
 		return
 	}
-	list, err := fetchDeviceList(c.Email, c.Password, c.Region)
+	list, err := fetchDeviceList(c.Email, c.Password, c.Region, bridgeLogEnabled())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

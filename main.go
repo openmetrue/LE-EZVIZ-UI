@@ -41,7 +41,11 @@ func main() {
 	if *email == "" || *password == "" {
 		panic("email/password required")
 	}
-	logging.CreateLogger(*logFile, *logStdout)
+	// stdout carries the raw stream (-out=-) or JSON (-statusOnly/-listDevices)
+	// in these modes, so never write logs there.
+	toStdout := *out == "-" || *statusOnly || *idleWait || *listDevices
+	logging.CreateLogger(*logFile, *logStdout && !toStdout)
+	client.SetLogger(logging.Log)
 	log = logging.Log
 	if _, ok := client.Regions[*region]; !ok {
 		log.Error("Invalid region")

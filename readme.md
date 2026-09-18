@@ -25,8 +25,8 @@ That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, ffmpeg (Save remux, plus `libb
 Pin a version:
 
 ```sh
-curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v1.0.0/install.sh \
-  | sudo EZVIZ_VERSION=v1.0.0 bash
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v1.0.1/install.sh \
+  | sudo EZVIZ_VERSION=v1.0.1 bash
 ```
 
 Publishing a build: tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`). The release carries `ezvizd-linux-amd64`, `le-ezviz-vs-linux-amd64`, `ezvizd.service`, `install.sh`, `VERSION` and `sha256sums.txt` — the names `install.sh` downloads.

@@ -89,11 +89,12 @@ Applied on top of upstream files (not a wholesale replace). Everything else in t
 repository root is upstream, byte for byte — `logging/`, `client/request.go`, and the
 cosmetic client files are untouched, so upstream edits to them merge cleanly.
 
-- `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly`, `-listDevices`, `-maxStreamTime`, reconnect loop; `-stdout`/`-logFile` pass through to the upstream logger (off by default); warnings on stderr so they do not corrupt the stream.
-- `client/client.go` — `StreamOut`, connection tracking (`TrackConn`/`InterruptStream`/`DropConns`), `dialTCP`.
+- `main.go` — `-out` (stdout or FIFO), `-idleWait`, env credentials, `-statusOnly`, `-listDevices`, `-maxStreamTime`, reconnect loop; `-stdout`/`-logFile` pass through to the upstream logger (off by default); stdout logging is suppressed when stdout carries the stream or JSON, and `client.SetLogger` points the client at the configured logger so its logs cannot corrupt them.
+- `client/client.go` — `SetLogger`, `StreamOut`, connection tracking (`TrackConn`/`InterruptStream`/`DropConns`), `dialTCP`.
 - `client/vtdu.go` — write MPEG-PS to `StreamOut`; `io.ReadFull`; reconnect on header desync; no in-process ffmpeg remux.
 - `client/vtm.go` — `DialVTM` (warm idle socket), simplified `ConnectVTM`.
 - `client/pagelist.go` — `DeviceStatus`, `GetDeviceStatus` (original `GetPageList` unchanged).
+- `client/serverinfo.go` — reject a response without `serverResp.authAddr` instead of dereferencing nil.
 - `client/rtpPacket.go` — drop the unreachable tail (dead code; keeps `go vet` clean).
 - `go.mod`/`go.sum` — no `ffmpeg-go`/`x/sync`.
 

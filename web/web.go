@@ -248,6 +248,7 @@ func handleSetup(w http.ResponseWriter, r *http.Request) {
 		case "update":
 			_ = runUpdateCheck(lang)
 		default:
+			logOn := bridgeLogEnabled()
 			err := updateCfg(func(c *Config) error {
 				c.Email = strings.TrimSpace(r.FormValue("email"))
 				c.Password = r.FormValue("password")
@@ -256,7 +257,7 @@ func handleSetup(w http.ResponseWriter, r *http.Request) {
 					c.Region = "Russia"
 				}
 				if activeSerial(*c) == "" {
-					if s := pickDefaultSerial(c.Email, c.Password, c.Region); s != "" {
+					if s := pickDefaultSerial(c.Email, c.Password, c.Region, logOn); s != "" {
 						c.ActiveSerial = s
 						c.Serial = s
 					}
