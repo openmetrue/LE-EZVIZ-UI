@@ -2,18 +2,22 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yapingcat/gomedia/go-codec"
+	gomp4 "github.com/yapingcat/gomedia/go-mp4"
+	"github.com/yapingcat/gomedia/go-mpeg2"
 )
 
 const (
@@ -102,45 +106,120 @@ func humanSize(n int64) string {
 	}
 }
 
-// remuxAppleMP4 remuxes without re-encoding. Prefers hvc1 for QuickTime/iOS;
-// falls back without the tag if the stream is not HEVC.
-func remuxAppleMP4(src, dst string) error {
-	try := func(tag string) error {
-		args := []string{
-			"-y", "-hide_banner", "-loglevel", "error",
-			"-fflags", "+genpts+discardcorrupt",
-			"-probesize", "8M", "-analyzeduration", "8M",
-			"-i", src,
-			"-c", "copy", "-an",
-			"-avoid_negative_ts", "make_zero",
-			"-movflags", "+faststart",
-		}
-		if tag != "" {
-			args = append(args, "-tag:v", tag)
-		}
-		// Explicit muxer: temp paths like *.mp4.part are not sniffed as mp4.
-		args = append(args, "-f", "mp4", dst)
-		cmd := exec.Command(*ffmpegPath, args...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			detail := strings.TrimSpace(string(out))
-			if detail == "" {
-				return err
-			}
-			return fmt.Errorf("%w: %s", err, detail)
-		}
-		return nil
-	}
-	if err := try("hvc1"); err != nil {
-		_ = os.Remove(dst)
-		if err2 := try(""); err2 != nil {
-			return err
-		}
-	}
-	return nil
+var errNoVideo = errors.New("no HEVC video in the ring buffer")
+
+type psAU struct {
+	data []byte
+	pts  uint64
+	dts  uint64
 }
 
-// remuxLiveClip snapshots the MPEG-PS ring and remuxes to a temp MP4.
+func hevcHasParams(au []byte) bool {
+	return hevcHasTypeRange(au, codec.H265_NAL_VPS, codec.H265_NAL_PPS)
+}
+
+// remuxPSToMP4 demuxes the camera MPEG-PS with gomedia — the same demuxer Live
+// uses — and muxes the HEVC access units into a progressive MP4 (hvc1). No
+// ffmpeg. Samples start at the first IRAP so the clip opens on a keyframe; any
+// parameter-set access units just before it are kept so hvcC stays complete.
+func remuxPSToMP4(ps []byte, w io.WriteSeeker) error {
+	muxer, err := gomp4.CreateMp4Muxer(w)
+	if err != nil {
+		return err
+	}
+	tid := muxer.AddVideoTrack(gomp4.MP4_CODEC_H265)
+
+	var (
+		au      []byte
+		auPTS   uint64
+		auDTS   uint64
+		started bool
+		pre     []psAU
+		samples int
+		werr    error
+	)
+
+	write := func(a psAU) error {
+		if !started {
+			if !hevcHasIRAP(a.data) {
+				if hevcHasParams(a.data) {
+					pre = append(pre, a)
+				} else {
+					pre = pre[:0]
+				}
+				return nil
+			}
+			started = true
+			for _, p := range pre {
+				if err := muxer.Write(tid, p.data, p.pts, p.dts); err != nil {
+					return err
+				}
+			}
+			pre = nil
+		}
+		samples++
+		return muxer.Write(tid, a.data, a.pts, a.dts)
+	}
+
+	flush := func() error {
+		if len(au) == 0 {
+			return nil
+		}
+		a := psAU{data: au, pts: auPTS, dts: auDTS}
+		au = nil
+		return write(a)
+	}
+
+	newDemuxer := func() *mpeg2.PSDemuxer {
+		d := mpeg2.NewPSDemuxer()
+		d.OnFrame = func(frame []byte, cid mpeg2.PS_STREAM_TYPE, pts, dts uint64) {
+			if werr != nil || cid != mpeg2.PS_STREAM_H265 || len(frame) == 0 {
+				return
+			}
+			if len(au) > 0 && pts != auPTS {
+				if err := flush(); err != nil {
+					werr = err
+					return
+				}
+			}
+			if dts == 0 || dts > pts {
+				dts = pts
+			}
+			au = append(au, frame...)
+			auPTS, auDTS = pts, dts
+		}
+		return d
+	}
+
+	demuxer := newDemuxer()
+	const chunk = 64 << 10
+	for off := 0; off < len(ps) && werr == nil; off += chunk {
+		end := off + chunk
+		if end > len(ps) {
+			end = len(ps)
+		}
+		func() {
+			defer func() {
+				if recover() != nil {
+					demuxer = newDemuxer()
+				}
+			}()
+			_ = demuxer.Input(ps[off:end])
+		}()
+	}
+	if werr != nil {
+		return werr
+	}
+	if err := flush(); err != nil {
+		return err
+	}
+	if samples == 0 {
+		return errNoVideo
+	}
+	return muxer.WriteTrailer()
+}
+
+// remuxLiveClip snapshots the MPEG-PS ring and muxes it to a temp MP4.
 // Caller must remove tmpPath when done.
 func remuxLiveClip(r *http.Request) (name, tmpPath string, status int, errMsg string) {
 	st := streamer.Status()
@@ -152,32 +231,20 @@ func remuxLiveClip(r *http.Request) (name, tmpPath string, status int, errMsg st
 		return "", "", http.StatusServiceUnavailable, T(langOf(r), "save.empty")
 	}
 	name = newClipName()
-	psFile, err := os.CreateTemp("", "rec-*.ps")
-	if err != nil {
-		return "", "", http.StatusInternalServerError, err.Error()
-	}
-	psPath := psFile.Name()
-	if _, err := psFile.Write(raw); err != nil {
-		psFile.Close()
-		os.Remove(psPath)
-		return "", "", http.StatusInternalServerError, err.Error()
-	}
-	psFile.Close()
-	defer os.Remove(psPath)
-
 	tmpFile, err := os.CreateTemp("", "rec-*.mp4")
 	if err != nil {
 		return "", "", http.StatusInternalServerError, err.Error()
 	}
 	tmpPath = tmpFile.Name()
-	tmpFile.Close()
-
-	// Write PS to disk first so ffmpeg can probe the finite buffer; pipe +
-	// -map 0:v:0 often failed with exit 234 when no video stream was detected yet.
-	if err := remuxAppleMP4(psPath, tmpPath); err != nil {
+	if err := remuxPSToMP4(raw, tmpFile); err != nil {
+		tmpFile.Close()
 		os.Remove(tmpPath)
 		log.Printf("save: remux: %v", err)
-		return "", "", http.StatusInternalServerError, "ffmpeg: " + err.Error()
+		return "", "", http.StatusInternalServerError, "remux: " + err.Error()
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", "", http.StatusInternalServerError, err.Error()
 	}
 	return name, tmpPath, 0, ""
 }

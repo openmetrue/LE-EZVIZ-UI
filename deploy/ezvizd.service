@@ -10,7 +10,6 @@ ExecStart=/opt/ezvizd/ezvizd \
   -config /opt/ezvizd/config.json \
   -workdir /var/lib/ezvizd \
   -bridge /opt/ezvizd/le-ezviz-vs \
-  -ffmpeg /usr/bin/ffmpeg \
   -base /ezviz \
   -idle 10
 Restart=always

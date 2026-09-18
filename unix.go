@@ -12,8 +12,8 @@ func notifyIdleStop(c chan<- os.Signal) {
 	signal.Notify(c, syscall.SIGUSR1)
 }
 
-// unblockFifoWriter opens and closes the output FIFO so a blocked ffmpeg
-// reader is released when the stream never started.
+// unblockFifoWriter opens and closes the output FIFO so a blocked reader is
+// released when the stream never started.
 func unblockFifoWriter() {
 	if !*idleWait || *out == "" || *out == "-" {
 		return

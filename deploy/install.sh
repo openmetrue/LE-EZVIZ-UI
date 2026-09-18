@@ -2,7 +2,7 @@
 # One-shot install / upgrade of LE-EZVIZ-UI (ezvizd + le-ezviz-vs).
 #   curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/install.sh | sudo bash
 # Pin: EZVIZ_VERSION=vX.Y.Z bash
-# Matching versions still repair runtime (ffmpeg libs, nginx).
+# Matching versions still repair runtime (nginx).
 set -euo pipefail
 
 REPO="${EZVIZ_REPO:-openmetrue/LE-EZVIZ-UI}"
@@ -40,12 +40,7 @@ apt_install() {
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -o DPkg::Lock::Timeout=120 \
-    ca-certificates curl ffmpeg libblas3 liblapack3
-}
-
-ffmpeg_ok() {
-  command -v ffmpeg >/dev/null 2>&1 || return 1
-  ffmpeg -hide_banner -version >/dev/null 2>&1
+    ca-certificates curl
 }
 
 ensure_runtime() {
@@ -53,44 +48,35 @@ ensure_runtime() {
   if ! command -v curl >/dev/null 2>&1; then
     need_apt=1
   fi
-  if ! ffmpeg_ok; then
-    need_apt=1
-  fi
   if [[ "$need_apt" -eq 1 ]]; then
     if ! command -v apt-get >/dev/null 2>&1; then
-      echo "install curl, ffmpeg, libblas3, liblapack3 and re-run" >&2
+      echo "install curl and re-run" >&2
       exit 1
     fi
-    echo "installing runtime packages (curl, ffmpeg, libblas3, liblapack3)"
+    echo "installing runtime packages (curl)"
     apt_install
   fi
   if ! command -v curl >/dev/null 2>&1; then
     echo "curl is required" >&2
     exit 1
   fi
-  if ! ffmpeg_ok; then
-    echo "ffmpeg is missing or cannot start (shared libraries?)" >&2
-    exit 1
-  fi
-  if [[ ! -x /usr/bin/ffmpeg ]]; then
-    echo "ezvizd.service expects /usr/bin/ffmpeg" >&2
-    exit 1
-  fi
 }
 
-# Older releases shipped go2rtc. Live is a plain HTTP fMP4 stream now; drop the
-# flag, binary, and logs.
-cleanup_go2rtc() {
-  rm -f "${PREFIX}/go2rtc" "${WORKDIR}/go2rtc.yaml" "${WORKDIR}/go2rtc.log" "${WORKDIR}/live.ps"
+# Older releases shipped go2rtc and ffmpeg/webrtc flags. Live is a plain HTTP
+# fMP4 stream and Save is pure Go now; drop the flag, binary, and logs.
+cleanup_stale_flags() {
+  rm -f "${PREFIX}/go2rtc" "${WORKDIR}/go2rtc.yaml" "${WORKDIR}/go2rtc.log" \
+    "${WORKDIR}/live.ps" "${WORKDIR}/ffmpeg.log"
   [[ -f "$UNIT" ]] || return 1
-  grep -q -- '-go2rtc' "$UNIT" || return 1
+  local flags='-go2rtc|-ffmpeg|-webrtc-udp|-webrtc-ip'
+  grep -qE -- "$flags" "$UNIT" || return 1
   local tmp
   tmp="$(mktemp)"
-  awk '
+  awk -v pat="$flags" '
     /^[[:space:]]*#/ { print; next }
-    /^[[:space:]]*-go2rtc[[:space:]]/ { next }
+    $0 ~ "^[[:space:]]*(" pat ")[[:space:]]" { next }
     {
-      gsub(/[[:space:]]+-go2rtc[[:space:]]+[^[:space:]\\]+/, "")
+      gsub("[[:space:]]+(" pat ")[[:space:]]+[^[:space:]\\\\]+", "")
       print
     }
   ' "$UNIT" >"$tmp"
@@ -100,7 +86,7 @@ cleanup_go2rtc() {
   fi
   install -m 0644 "$tmp" "$UNIT"
   rm -f "$tmp"
-  echo "removed leftover -go2rtc from ${UNIT}"
+  echo "removed stale flags from ${UNIT}"
 }
 
 write_nginx_snippet() {
@@ -294,7 +280,7 @@ if [[ "$skip_binaries" -eq 0 ]]; then
 fi
 
 unit_changed=0
-if cleanup_go2rtc; then
+if cleanup_stale_flags; then
   unit_changed=1
 fi
 

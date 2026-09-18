@@ -16,11 +16,8 @@ var (
 	configPath = flag.String("config", "/opt/ezvizd/config.json", "path to config.json")
 	workDir    = flag.String("workdir", "/var/lib/ezvizd", "working directory (logs, stats)")
 	bridgePath = flag.String("bridge", "/opt/ezvizd/le-ezviz-vs", "path to the le-ezviz-vs bridge")
-	ffmpegPath = flag.String("ffmpeg", "/usr/bin/ffmpeg", "path to ffmpeg")
 	basePath   = flag.String("base", "/ezviz", "URL prefix behind nginx")
 	idleSec    = flag.Int("idle", 10, "seconds without viewers before the stream stops")
-	webrtcUDP  = flag.Int("webrtc-udp", 8091, "unused; kept so existing systemd units still start")
-	webrtcIP   = flag.String("webrtc-ip", "", "unused; kept so existing systemd units still start")
 	streamer   *Streamer
 )
 

@@ -36,7 +36,7 @@ Upstream `protocol.md`, `codecs.md`, `encryption.md`, and `.github/workflows/go.
 
 ## Build
 
-Needs [Go](https://go.dev/dl/) 1.24+ and `ffmpeg` (Save remux only) on the machine that runs the stream.
+Needs [Go](https://go.dev/dl/) 1.24+ on the machine that runs the stream. No ffmpeg: Live and Save both demux the camera MPEG-PS with gomedia and mux with mp4ff / gomedia's MP4 muxer.
 
 From the repository root:
 
@@ -72,7 +72,7 @@ From a GitHub Release (linux amd64):
 curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/install.sh | sudo bash
 ```
 
-That is documented in the root `readme.md`. The script installs `ffmpeg` (Save remux, including BLAS/LAPACK), and adds nginx `/ezviz/` when nginx is present. Manual copy (`make linux` → `/opt/ezvizd/`) still works.
+That is documented in the root `readme.md`. The script adds nginx `/ezviz/` when nginx is present. Manual copy (`make linux` → `/opt/ezvizd/`) still works.
 
 Data lives in `/var/lib/ezvizd` (`stats.json`, `devstatus.json`, `stream.ps` FIFO, `recordings/`, logs). Config is `/opt/ezvizd/config.json` (mode `600`, contains the EZVIZ password — keep it off git). Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`). Open the site once: set the **site** password, then EZVIZ email / password / serial.
 

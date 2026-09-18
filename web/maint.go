@@ -22,7 +22,6 @@ type logFile struct {
 func logFiles() []logFile {
 	return []logFile{
 		{"lez", workFile("lez.log"), 80 << 20},
-		{"ffmpeg", ffmpegLogPath(), 18 << 20},
 		{"bridge", bridgeErrPath(), 2 << 20},
 		{"ezvizd", "", 0},
 	}

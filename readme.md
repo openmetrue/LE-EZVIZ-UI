@@ -20,7 +20,7 @@ Linux amd64 with systemd. Binaries come from [GitHub Releases](https://github.co
 curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/install.sh | sudo bash
 ```
 
-That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, ffmpeg (Save remux, plus `libblas3`/`liblapack3`), enables `ezvizd.service`, and adds nginx `location /ezviz/` when nginx is present. Live is served over HTTP, so no extra inbound ports are needed. Existing `config.json` is left in place. Then open the site once to set the password.
+That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, enables `ezvizd.service`, and adds nginx `location /ezviz/` when nginx is present. Live is served over HTTP, so no extra inbound ports are needed. Existing `config.json` is left in place. Then open the site once to set the password.
 
 Pin a version:
 
