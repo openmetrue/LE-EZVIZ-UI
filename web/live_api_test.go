@@ -123,10 +123,13 @@ func TestLiveSampleBytesSkipsParamSets(t *testing.T) {
 	}
 }
 
-func TestLiveSaveDownloadsBlob(t *testing.T) {
+func TestLiveSaveStoresOnServer(t *testing.T) {
 	js := liveSaveJS()
-	if !strings.Contains(js, "r.blob()") || !strings.Contains(js, "createObjectURL") {
-		t.Fatal("save should download via fetch+blob")
+	if !strings.Contains(js, "/save") || !strings.Contains(js, `method: "POST"`) {
+		t.Fatal("save should POST the clip to the server")
+	}
+	if strings.Contains(js, "createObjectURL") || strings.Contains(js, ".download") {
+		t.Fatal("save must not download the clip to the browser any more")
 	}
 	if strings.Contains(js, "iframe") {
 		t.Fatal("hidden iframe downloads break Save on Safari")

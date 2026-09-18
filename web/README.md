@@ -2,7 +2,7 @@
 
 Web UI for EZVIZ cameras, built on **[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS)**. This `web/` directory is a separate Go module so `go build ./...` at the repository root still builds only the original stream client. The daemon binary is still **`ezvizd`**.
 
-[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS feed. **`ezvizd`** turns that feed into low-latency HEVC over HTTP fMP4, with a site password, Save, and a battery chart.
+[LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) is the cloud stream client: it logs into EZVIZ, talks to VTM/VTDU, and writes the raw MPEG-PS feed. **`ezvizd`** turns that feed into low-latency HEVC over HTTP fMP4, with a site password, server-side clips (Videos tab), and a battery chart.
 
 It is aimed at cameras with **no local RTSP** (HP2 and others). The camera sleeps until someone opens the page; the stream stops ~10s after the last viewer.
 
@@ -29,7 +29,7 @@ This daemon is MIT. The stream client at the repo root stays LGPL-2.1 (upstream 
 | Path | What |
 |------|------|
 | `/` (repo root) | Fork of [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS), focused on MPEG-PS. Flags used by ezvizd: `-out`, `-idleWait`, `-maxStreamTime`, `-statusOnly`, env credentials. |
-| `web/` | Sources for the **`ezvizd`** daemon — site password, Save, battery history, logs. Live is gomedia MPEG-PS → HEVC → mp4ff CMAF fMP4 over HTTP, played with MediaSource. |
+| `web/` | Sources for the **`ezvizd`** daemon — site password, clips on disk, battery history, logs. Live is gomedia MPEG-PS → HEVC → mp4ff CMAF fMP4 over HTTP, played with MediaSource. |
 | `deploy/` | Example `systemd` unit and nginx snippet. |
 
 Upstream `protocol.md`, `codecs.md`, `encryption.md`, and `.github/workflows/go.yml` are unchanged. The root `readme.md` starts with the LE-EZVIZ-UI story; the rest is still LethalEthan’s original text.
@@ -74,13 +74,13 @@ curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/latest/download/in
 
 That is documented in the root `readme.md`. The script installs `ffmpeg` (Save remux, including BLAS/LAPACK), and adds nginx `/ezviz/` when nginx is present. Manual copy (`make linux` → `/opt/ezvizd/`) still works.
 
-Data lives in `/var/lib/ezvizd` (`stats.json`, `devstatus.json`, `stream.ps` FIFO, logs). Config is `/opt/ezvizd/config.json` (mode `600`, contains the EZVIZ password — keep it off git). Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`). Open the site once: set the **site** password, then EZVIZ email / password / serial.
+Data lives in `/var/lib/ezvizd` (`stats.json`, `devstatus.json`, `stream.ps` FIFO, `recordings/`, logs). Config is `/opt/ezvizd/config.json` (mode `600`, contains the EZVIZ password — keep it off git). Proxy `/ezviz/` to `127.0.0.1:8090` (see `deploy/nginx.conf`). Open the site once: set the **site** password, then EZVIZ email / password / serial.
 
 ## Battery / stream notes
 
 - Cloud login (`-statusOnly`) does **not** wake the camera. Starting VTDU does.
 - EZVIZ drops video for battery cams after ~180s even if keepalive is fine. The client reconnects at 170s (`-maxStreamTime`).
-- Live is HTTP fMP4 HEVC (camera bitstream, no transcode), played with MediaSource. Save remuxes the original camera MPEG-PS (full-res HEVC) from a short ring buffer. Safari 18+ / recent Chrome.
+- Live is HTTP fMP4 HEVC (camera bitstream, no transcode), played with MediaSource. Save remuxes the original camera MPEG-PS (full-res HEVC) from a short ring buffer and stores it in `/var/lib/ezvizd/recordings/`; the Videos tab plays, downloads or deletes clips (oldest pruned past ~2 GB / 200 files). Safari 18+ / recent Chrome.
 - Bridge logging is off by default. Enable it in Settings → Logs to write verbose logs (every packet, ~45 MB/day) to `lez.log`; it applies on the next stream start.
 
 ## Patches on upstream LE-EZVIZ-VS

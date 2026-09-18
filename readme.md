@@ -6,7 +6,7 @@ A web interface for EZVIZ cameras that do not expose local RTSP. Built on [LE-EZ
 
 EZVIZ HP2 and similar devices do not provide a local RTSP endpoint. Live video is available only through the official mobile application. Time from launching the app to a usable frame is ~15 seconds: splash screen, device list, then a second confirmation to start viewing.
 
-Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand Live as HEVC over HTTP fMP4, site authentication, Save, and battery history.
+Extraction of the media stream from the EZVIZ cloud API is implemented in [LE-EZVIZ-VS](https://github.com/LethalEthan/LE-EZVIZ-VS) (LethalEthan). This repository adds the `ezvizd` daemon (`web/`): on-demand Live as HEVC over HTTP fMP4, site authentication, server-side clips (Save → Videos), and battery history.
 
 ![Live player demo](demo.gif)
 
@@ -25,8 +25,8 @@ That installs `/opt/ezvizd/{ezvizd,le-ezviz-vs}`, ffmpeg (Save remux, plus `libb
 Pin a version:
 
 ```sh
-curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v1.0.1/install.sh \
-  | sudo EZVIZ_VERSION=v1.0.1 bash
+curl -fsSL https://github.com/openmetrue/LE-EZVIZ-UI/releases/download/v1.1.0/install.sh \
+  | sudo EZVIZ_VERSION=v1.1.0 bash
 ```
 
 Publishing a build: tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`). The release carries `ezvizd-linux-amd64`, `le-ezviz-vs-linux-amd64`, `ezvizd.service`, `install.sh`, `VERSION` and `sha256sums.txt` — the names `install.sh` downloads.
@@ -34,6 +34,7 @@ Publishing a build: tag and push (`git tag vX.Y.Z && git push origin vX.Y.Z`). T
 ### Notes
 
 - Live is HEVC over HTTP fMP4 (no HLS, no WebRTC), played with MediaSource.
+- Save keeps the clip on the server; the Videos tab plays, downloads and deletes them. Oldest clips are pruned past ~2 GB / 200 files.
 - Bridge supports **MPEG-PS only** (HP2 and similar); RTP payload decode is not used — use upstream LE-EZVIZ-VS for RTP-only models.
 - Stream-client patches are listed in [`web/README.md`](web/README.md); the rest of the repository root is upstream.
 

@@ -143,6 +143,7 @@ func tabs(r *http.Request, active string) string {
 	}
 	return `<div class="tabs">` +
 		item("live", "/", "nav.live") +
+		item("recordings", "/recordings", "nav.recordings") +
 		item("stats", "/stats", "nav.stats") +
 		item("logs", "/logs", "nav.logs") +
 		item("setup", "/setup", "nav.setup") +
@@ -507,6 +508,7 @@ func handlePlayer(w http.ResponseWriter, r *http.Request) {
 	jsT, _ := json.Marshal(map[string]string{
 		"saving":        T(lang, "live.saving"),
 		"downloaded":    T(lang, "live.downloaded"),
+		"savedServer":   T(lang, "live.savedServer"),
 		"saveFail":      T(lang, "live.saveFail"),
 		"saveErr":       T(lang, "live.saveErr"),
 		"switchFail":    T(lang, "live.switchFail"),
@@ -599,24 +601,12 @@ document.getElementById("save").onclick = async () => {
   st.textContent = t.saving;
   try {
     const r = await fetch("` + *basePath + `/save", {method: "POST"});
+    const j = await r.json().catch(() => ({}));
     if (!r.ok) {
-      st.textContent = t.saveFail + await r.text();
+      st.textContent = t.saveFail + (j.error || "");
       return;
     }
-    const blob = await r.blob();
-    let name = "clip.mp4";
-    const cd = r.headers.get("Content-Disposition") || "";
-    const m = /filename="?([^";]+)"?/.exec(cd);
-    if (m) name = m[1];
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
-    st.textContent = t.downloaded + name;
+    st.textContent = t.savedServer + (j.name || "");
   } catch (e) {
     st.textContent = t.saveErr;
   }
